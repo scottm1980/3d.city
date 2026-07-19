@@ -20,3 +20,5 @@ export { ValueNoise2D } from './worldgen/ValueNoise.js';
 export { TerrainType, classifyTerrain } from './worldgen/Terrain.js';
 export { DefaultResourceTypes, DefaultResourceRules } from './worldgen/DefaultResources.js';
 export { CityMapGenerator } from './worldgen/CityMapGenerator.js';
+export { SeededRandom } from './worldgen/SeededRandom.js';
+export { RegionMapGenerator, summarizeResources } from './worldgen/RegionMapGenerator.js';

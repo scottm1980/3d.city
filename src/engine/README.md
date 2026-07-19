@@ -22,19 +22,29 @@ recipes, and multi-city regions, which have no equivalent in the original.
 - **`messages/`** — Worker message-type vocabulary only. Actual
   scheduling/dispatch across `managed` (full-fidelity) and `automated`
   (coarse) cities is Tier 7, not implemented here.
-- **`worldgen/`** (Tier 2, single-city slice) — `CityMapGenerator`
-  generates a `CityState`'s terrain and resource endowment from a seed.
-  Dependency-free hash-based value noise (`ValueNoise2D`) drives elevation
-  and moisture fields that classify each `Lot`'s `TerrainType`; each raw
-  resource in `DefaultResourceRules` gets its own independent noise field,
-  terrain-gated and threshold-clustered into belts, so placement reads as
-  real geography rather than a per-tile random roll. Deterministic: same
-  seed always produces the same map.
+- **`worldgen/`** — Tier 2, both slices now complete:
+  - *Single-city slice*: `CityMapGenerator` generates a `CityState`'s
+    terrain and resource endowment from a seed. Dependency-free hash-based
+    value noise (`ValueNoise2D`) drives elevation and moisture fields that
+    classify each `Lot`'s `TerrainType`; each raw resource in
+    `DefaultResourceRules` gets its own independent noise field,
+    terrain-gated and threshold-clustered into belts, so placement reads as
+    real geography rather than a per-tile random roll.
+  - *Region/network slice*: `RegionMapGenerator` places city nodes across
+    an abstract region space (seeded rejection sampling for minimum
+    spacing), generates each node's full `CityState` via `CityMapGenerator`
+    with a per-node seed, and connects the network with `CorridorEdge`s —
+    a minimum spanning tree for guaranteed connectivity plus a redundancy
+    pass for nearby node pairs, not a fully modeled connecting terrain (see
+    the locked node-network decision in `COUNTRY_SIM_ENGINE_PLAN.md`). The
+    first node defaults to `managed`; the rest start `automated`.
+    `summarizeResources()` aggregates a generated city's dominant resources
+    for site-selection/UI use, derived from the map rather than generated
+    separately.
+  - Both are deterministic per seed.
 
 ## Deliberately not here yet
 
-- The region/country node network and inter-city corridor generation
-  (Tier 2's second slice — single-city generation above is the first).
 - Zone resolution rules — what a `Lot` + `ResourceEndowment` + regional
   demand actually resolves to (Tier 3).
 - The trade/logistics resolver that matches supply and demand and creates

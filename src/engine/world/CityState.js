@@ -7,11 +7,13 @@ export const ControlMode = Object.freeze( {
 
 export class CityState {
 
-    constructor ( id, name, { width, height, controlMode = ControlMode.AUTOMATED } = {} ) {
+    constructor ( id, name, { width, height, controlMode = ControlMode.AUTOMATED, regionPosition = null } = {} ) {
 
         this.id = id;
         this.name = name;
         this.controlMode = controlMode;
+
+        this.regionPosition = regionPosition; // { x, y } in region space, set by RegionMapGenerator
 
         this.width = width;
         this.height = height;
