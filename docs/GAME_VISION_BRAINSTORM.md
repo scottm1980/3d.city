@@ -135,8 +135,77 @@ zero install friction for a shared session.
 - **Accessibility from day one** — colorblind-safe overlay palettes, since
   `Hub_Overlays.js` already exists as the natural place to add them.
 
+## 5. Additional mechanics ideas (round 2)
+
+### Traffic sim as an economy engine, not just a routing puzzle
+`src/traffic` already moves individual vehicle agents around for visual/
+congestion purposes. Let those same agents *carry* something — goods from an
+industrial zone to a warehouse, workers from residential to jobs, tourists
+from a hotel to an attraction — and supply chains become visible and legible
+instead of a background number. Most city builders fake this with stats; a
+truck can visibly get stuck in the jam you caused. Rare differentiator
+because it requires a real per-vehicle pathing sim, which already exists
+here.
+
+### Mass Movement Events — one system, two opposite triggers
+Originally framed as "disasters as an emergent traffic-stress test rather
+than a scripted event" (load the existing road network dynamically — spike
+evacuation demand, watch `TrafficWorld` actually gridlock, score on how many
+sims got out, instead of "tornado plays animation, damages tiles").
+
+Broadened: build this as a general **mass movement event** system with two
+opposite triggers sharing the same underlying mechanism:
+
+- **Forced / negative** — disaster evacuation. Sudden, unplanned, penalizes
+  a network that can't clear fast enough.
+- **Planned / positive** — city events: concerts, sports games, festivals,
+  parades, conventions. Scheduled (often player-triggered) surges tied to
+  specific venue buildings (Stadium, Arena, Concert Hall, festival grounds,
+  Convention Center) rather than random disasters.
+
+Planned events add a risk/reward layer disasters don't: bigger events mean
+more ticket revenue and tourism income, but stress the road network around
+that venue exactly like an evacuation would — if transit design can't
+handle the surge, the payoff is complaints, traffic-jam penalties, possibly
+cancelled events or reputation loss. Strategic response mirrors real
+infrastructure problems: build parking/transit hubs near venues, schedule
+events off-peak, run event-specific shuttle lines using the same
+vehicle-agent system as goods transport above.
+
+Because both triggers reduce to "spike demand on the road network, measure
+whether it holds," this is cheap to build once and get both a disaster
+system and an events/economy system out of it. Natural tie-ins to existing
+scaffolding: `Hub_Economy.js` (ticket/tourism revenue), `Hub_Ordinances.js`
+(event permits), `Hub_Overlays.js` (event traffic heatmap), `Hub_History.js`
+("the city that always jams during football season" as an emergent,
+readable story rather than a stat).
+
+### Micro-scenarios as tutorial-by-stealth
+The roguelite/run structure (direction D) doesn't have to replace the
+sandbox — it can be the onboarding path instead. First-time players get
+short scenario runs (5–10 min, one clear failure mode each) that teach one
+system at a time, then "graduate" into the open sandbox once they've
+unlocked enough building types to make it interesting. Solves the classic
+city-builder cold-open problem: a blank map with 40 buttons and no idea
+which to press first.
+
+### Seasonal identity over reskins
+Rather than snow/night as a cosmetic toggle (current roadmap phrasing), each
+season shifts the *dominant* pressure instead: summer = power/water demand,
+winter = plowing/heating cost and slower traffic, storm season = the mass
+movement / disaster system above. Gives the existing shader/LUT roadmap item
+a mechanical reason to exist instead of only looking nice.
+
+### A different fail-state philosophy
+SimCity/Skylines punish with abandonment and bulldozing. Given the
+disaster-spectacle lean already present in the asset pipeline, failure could
+instead be *narrative*: a monster stomps a district, you rebuild it as a
+memorial park or a fortified zone, and the city's history panel
+(`Hub_History.js`, already exists) visibly carries the scar going forward.
+Turns loss into content instead of pure punishment.
+
 ## Open question
 
-No genre direction chosen yet. Candidates A–E (and hybrids) above are the
-live options — next step is picking one (or a hybrid) so Tier 1's data model
-can be designed around it rather than staying generic.
+No genre direction chosen yet. Candidates A–E (and hybrids) in §2 above are
+the live options — next step is picking one (or a hybrid) so Tier 1's data
+model can be designed around it rather than staying generic.
