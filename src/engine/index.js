@@ -22,3 +22,6 @@ export { DefaultResourceTypes, DefaultResourceRules } from './worldgen/DefaultRe
 export { CityMapGenerator } from './worldgen/CityMapGenerator.js';
 export { SeededRandom } from './worldgen/SeededRandom.js';
 export { RegionMapGenerator, summarizeResources } from './worldgen/RegionMapGenerator.js';
+
+export { ZoneResolver, geographicResourceIds, developLot } from './resolution/ZoneResolver.js';
+export { DefaultRecipes, DefaultProcessedResourceTypes } from './resolution/DefaultRecipes.js';
