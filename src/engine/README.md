@@ -74,12 +74,36 @@ recipes, and multi-city regions, which have no equivalent in the original.
   resource only unlocks processing recipes once something in the region is
   actually producing it.
 
+- **`tools/`** — Tier 5. Tool scope splits by control mode, per the
+  round-2 decision:
+  - `ZoningTool` — for `managed` cities. `preview()` dry-runs a zoning
+    decision (set, resolve, restore) so a player can see what a lot would
+    become before committing, satisfying the plan's "surface resource
+    endowment... before the player commits." `zone()` commits and attempts
+    immediate resolution. `reattempt()` sweeps every zoned-but-undeveloped
+    lot in a city and retries resolution - deliberately control-mode
+    agnostic, since picking up a lot that couldn't resolve before isn't a
+    control decision. Tier 7's orchestrator is expected to call it for
+    every city, managed or automated, after each `TradeResolver.tick()`.
+  - `TownCharterTool` — for `automated` cities. No tile-by-tile control:
+    `apply()` zones a batch of a city's undeveloped lots per call according
+    to a `TownCharter`'s industrial/residential/commercial weights (an
+    on-site resource always wins toward industrial), using a `SeededRandom`
+    for deterministic, replayable growth. `maxLots` caps successful
+    developments per call, not lots zoned - unresolved ones stay zoned for
+    `ZoningTool.reattempt()` to pick up later.
+  - `FoundCityTool` — places one new city node into an existing region
+    network (minimum-spacing enforced, connects to the nearest existing
+    cities), generating its map via the same `CityMapGenerator` Tier 2 uses.
+    No equivalent exists in the original tool set.
+
 ## Deliberately not here yet
 
-- Tools (Tier 5), cargo-sprite visuals (Tier 6), and the region orchestrator
-  that replaces `CityGame.js` (Tier 7) - including wiring `TradeResolver`'s
-  shipments into the real `src/traffic` vehicle-agent system for movement
-  and rendering, which this tier deliberately stops short of.
+- Cargo-sprite visuals (Tier 6) and the region orchestrator that replaces
+  `CityGame.js` (Tier 7) - including the per-tick loop that actually calls
+  `TradeResolver.tick()`, `ZoningTool.reattempt()`, and `TownCharterTool`
+  for every city, and wiring shipments into the real `src/traffic`
+  vehicle-agent system for movement and rendering.
 
 This is a data-model skeleton meant to unblock those tiers, not a working
 simulation on its own.
