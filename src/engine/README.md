@@ -22,10 +22,19 @@ recipes, and multi-city regions, which have no equivalent in the original.
 - **`messages/`** — Worker message-type vocabulary only. Actual
   scheduling/dispatch across `managed` (full-fidelity) and `automated`
   (coarse) cities is Tier 7, not implemented here.
+- **`worldgen/`** (Tier 2, single-city slice) — `CityMapGenerator`
+  generates a `CityState`'s terrain and resource endowment from a seed.
+  Dependency-free hash-based value noise (`ValueNoise2D`) drives elevation
+  and moisture fields that classify each `Lot`'s `TerrainType`; each raw
+  resource in `DefaultResourceRules` gets its own independent noise field,
+  terrain-gated and threshold-clustered into belts, so placement reads as
+  real geography rather than a per-tile random roll. Deterministic: same
+  seed always produces the same map.
 
 ## Deliberately not here yet
 
-- Map/terrain generation and resource placement (Tier 2).
+- The region/country node network and inter-city corridor generation
+  (Tier 2's second slice — single-city generation above is the first).
 - Zone resolution rules — what a `Lot` + `ResourceEndowment` + regional
   demand actually resolves to (Tier 3).
 - The trade/logistics resolver that matches supply and demand and creates

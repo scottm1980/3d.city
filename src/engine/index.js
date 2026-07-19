@@ -15,3 +15,8 @@ export { CityBudget } from './budget/CityBudget.js';
 export { NationalBudget } from './budget/NationalBudget.js';
 
 export { TickMessageType, tickMessage } from './messages/TickMessages.js';
+
+export { ValueNoise2D } from './worldgen/ValueNoise.js';
+export { TerrainType, classifyTerrain } from './worldgen/Terrain.js';
+export { DefaultResourceTypes, DefaultResourceRules } from './worldgen/DefaultResources.js';
+export { CityMapGenerator } from './worldgen/CityMapGenerator.js';
