@@ -120,17 +120,51 @@ contamination are the same work, not two competing priorities.
 6. **Tier 5 found-city tool** and **Tier 6 cargo sprite tagging** — polish
    once the above is proven, not before.
 
-## Open decisions needed before Tier 1 is finalized
+## Locked decisions (round 2)
 
-- **Shared region map vs. abstracted city network.** One continuous modeled
-  terrain with multiple city footprints (SimCity 4/2013 "region" style) is
-  a much bigger Tier 2 scope than a stylized network of city nodes with
-  lighter connecting terrain. This decision gates Tier 2's design.
-- **Shared national/regional treasury vs. independent city budgets** with
-  only goods (not money) flowing between them. Affects Tier 4's
-  Budget/Evaluation rebuild directly.
-- **Depth of control over satellite towns.** Does the player directly manage
-  every founded city with full zoning/tools, or do smaller resource towns
-  get lighter, more automated oversight (closer to a colony outpost than a
-  full city)? Affects both Tier 5 (tool scope) and Tier 7 (how much per-city
-  simulation depth is needed for N cities at once).
+1. **Multi-city nodes** — a stylized network, not one continuous modeled
+   region terrain. Each city is its own fully generated map (a node); cities
+   are connected by inter-city corridors (rail/road/sea lanes) rather than
+   a shared SimCity 4/2013-style contiguous region. This substantially
+   shrinks Tier 2's scope versus the continuous-terrain option.
+2. **National budget sets individual city budgets — both, not either/or.**
+   A national treasury pools revenue (taxes + trade activity across the
+   whole network) and allocates funding to each city; cities aren't fully
+   autonomous, but they aren't a pure pass-through either. This is a
+   two-tier budget system, not a single ledger.
+3. **Lighter automated oversight for satellite towns.** The player doesn't
+   tile-by-tile manage every founded city. Smaller resource towns run on
+   simplified, automated rules; full manual control is reserved for the
+   city/cities the player actively chooses to manage closely.
+
+### Implications for the engine plan above
+
+- **Tier 1** — add a per-city **control-mode flag**: `managed` (full player
+  tools, full-fidelity per-tile simulation) vs. `automated` (heuristic-driven,
+  coarser simulation). This isn't just a UI restriction — automated cities
+  can run a cheaper aggregate simulation instead of a full `Tile`-grid tick,
+  which is what actually makes simulating many cities at once feasible
+  performance-wise. This is now a load-bearing part of Tier 1, not a later
+  optimization.
+- **Tier 2** — replaces the "region map" bullet: generate a **network graph**
+  of city nodes (each independently map-generated, resource endowment
+  assigned per node) connected by **corridor edges** — simplified transport
+  segments with distance/capacity for the vehicle-agent system to path
+  along, not fully modeled connecting terrain. Much less Tier 2 work than
+  the continuous-terrain alternative would have been.
+- **Tier 4** — `Budget.js`/`Evaluation.js` become **two-tiered**: a National
+  Budget system aggregating revenue and allocating it per city, and a City
+  Budget that operates within its national allocation rather than fully
+  independently. City evaluation/happiness can now be starved by national
+  policy, not just local mismanagement — a real tension, and it directly
+  reuses the "smaller cities forced to serve bigger ones" dependency already
+  central to the resource/production-chain design. Needs a new **National
+  Budget hub panel**, distinct from the existing per-city budget panel.
+- **Tier 5** — tool scope splits by control mode: full zoning/building tools
+  for `managed` cities; a lighter **town-charter tool** (policy/priority
+  sliders, not tile-by-tile control) for `automated` ones.
+- **Tier 7** — the region orchestrator must schedule mixed-fidelity ticks:
+  full simulation for `managed` cities, cheap aggregate simulation for
+  `automated` ones. This is the concrete answer to Tier 7's open
+  Worker-architecture question — fidelity, not just city count, is what
+  should drive how work is split across Workers.
