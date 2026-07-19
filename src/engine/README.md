@@ -97,13 +97,28 @@ recipes, and multi-city regions, which have no equivalent in the original.
     cities), generating its map via the same `CityMapGenerator` Tier 2 uses.
     No equivalent exists in the original tool set.
 
+- **`visuals/`** — Tier 6. `CargoVisualRegistry` resolves a `CargoVisual`
+  (tint, `ModelVariant`, short label) per resource id, falling back to a
+  per-category default (`RAW`/`PROCESSED`) so a resource added later
+  without explicit art direction still renders as something coherent
+  instead of breaking. `ModelVariant` is deliberately a small fixed set
+  (hopper/tanker/flatbed/refrigerated/van/transit) rather than one mesh per
+  resource, so cargo sharing a variant can still batch into the same
+  `InstancedMesh` - only the tint needs to vary per instance, which lines
+  up with the GPU-driven instancing item in
+  `docs/GRAPHICS_ENGINE_UPGRADE.md`. `visualForShipment()` is the Tier 7
+  wiring point: given a `Shipment` and the region's resource registry, what
+  it should look like once shipments are rendered as real traffic
+  vehicles. `DefaultCargoVisuals.js` is example content covering every
+  resource in `DefaultRecipes.js`, not a final art pass.
+
 ## Deliberately not here yet
 
-- Cargo-sprite visuals (Tier 6) and the region orchestrator that replaces
-  `CityGame.js` (Tier 7) - including the per-tick loop that actually calls
-  `TradeResolver.tick()`, `ZoningTool.reattempt()`, and `TownCharterTool`
-  for every city, and wiring shipments into the real `src/traffic`
-  vehicle-agent system for movement and rendering.
+- The region orchestrator that replaces `CityGame.js` (Tier 7) - including
+  the per-tick loop that actually calls `TradeResolver.tick()`,
+  `ZoningTool.reattempt()`, and `TownCharterTool` for every city, and
+  wiring shipments into the real `src/traffic` vehicle-agent system so
+  they move and render using the `CargoVisual`s this tier defines.
 
 This is a data-model skeleton meant to unblock those tiers, not a working
 simulation on its own.
