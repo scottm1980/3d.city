@@ -25,3 +25,6 @@ export { RegionMapGenerator, summarizeResources } from './worldgen/RegionMapGene
 
 export { ZoneResolver, geographicResourceIds, developLot } from './resolution/ZoneResolver.js';
 export { DefaultRecipes, DefaultProcessedResourceTypes } from './resolution/DefaultRecipes.js';
+
+export { shortestPath } from './trade/CorridorPathfinder.js';
+export { TradeResolver, availableResourceIds } from './trade/TradeResolver.js';

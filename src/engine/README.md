@@ -62,13 +62,24 @@ recipes, and multi-city regions, which have no equivalent in the original.
   farms, a steel/lumber processing chain, housing, retail) proving the
   mechanism, not a final content list.
 
+- **`trade/TradeResolver.js`** — Tier 4. `TradeResolver.tick()` runs the
+  region's economic heartbeat: production/consumption for every developed
+  `Facility` (extraction output scales with the lot's `resourceEndowment`
+  richness), advancing in-flight `Shipment`s toward delivery, then matching
+  fresh demand (facilities below their input buffer target) against fresh
+  supply (facilities with output on hand) and creating new `Shipment`s
+  routed over `CorridorPathfinder`'s shortest path — throttled by real
+  corridor capacity, not an abstract cap. `availableResourceIds(region)`
+  is what Tier 3's `ZoneResolver` should be driven by in practice: a
+  resource only unlocks processing recipes once something in the region is
+  actually producing it.
+
 ## Deliberately not here yet
 
-- The trade/logistics resolver that matches supply and demand, computes
-  real `availableResourceIds` per city, and creates `Shipment`s (Tier 4),
-  plus the observability queries built on top of it.
 - Tools (Tier 5), cargo-sprite visuals (Tier 6), and the region orchestrator
-  that replaces `CityGame.js` (Tier 7).
+  that replaces `CityGame.js` (Tier 7) - including wiring `TradeResolver`'s
+  shipments into the real `src/traffic` vehicle-agent system for movement
+  and rendering, which this tier deliberately stops short of.
 
 This is a data-model skeleton meant to unblock those tiers, not a working
 simulation on its own.
