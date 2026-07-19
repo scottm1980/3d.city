@@ -4,6 +4,13 @@ Living document. Captures what we're keeping from the fork, what the engine
 rewrite frees us to redesign, and open genre-direction ideas. Not a decision
 record — nothing here is committed until a direction is picked.
 
+> **Status:** superseded. None of directions A–E below, or the corrupt-mayor
+> detour that followed, is the chosen direction — kept here as ideation
+> history. The locked direction is a country/region supply-chain sim; see
+> `docs/COUNTRY_SIM_ENGINE_PLAN.md` for the actual design pillars and engine
+> plan. §1 and §3 (existing foundations, browser-native differentiators)
+> still apply regardless of genre and remain live.
+
 ## 1. Existing foundations (survive the rewrite untouched)
 
 These are MIT-safe, sit above the `src/micro` Worker boundary, and don't
