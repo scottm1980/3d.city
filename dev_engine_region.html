@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine region preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+</head>
+<style>
+*{ padding:0; margin: 0; -o-user-select:none; -ms-user-select:none; -khtml-user-select:none; -webkit-user-select:none; -moz-user-select: none;}
+html { width:100%; height:100%; }
+body { background:#20242c; font:10px sans-serif; width:100%; height:100%; color:#FFFFFF; overflow: hidden; }
+</style>
+<script type="module">
+	// Third dev preview: proves the two rendering gaps flagged in
+	// docs/RENDERER_INTEGRATION_FINDINGS.md are solvable in principle -
+	// a multi-city region view (the real renderer has no concept of one
+	// today) and multiple simultaneous vehicle instances (the real
+	// sprite system is one-instance-per-type, total). Still zero
+	// involvement from CityGame.js/WorkerBridge.js/GPL src/micro - a flat
+	// 2D canvas, not the real View.js/Three.js renderer, same as the
+	// other two dev previews.
+	//
+	// Cities are drawn as nodes sized by facility count, corridors as
+	// lines colored/thickened by current load-vs-capacity (so a
+	// bottleneck is visible, not just a stat), and every in-transit
+	// cross-city Shipment as its own moving dot, tinted by Tier 6's cargo
+	// visuals - many at once, which is exactly what the real sprite
+	// system can't do today.
+	import { RegionState } from './src/engine/world/RegionState.js';
+	import { RegionMapGenerator } from './src/engine/worldgen/RegionMapGenerator.js';
+	import { RegionOrchestrator } from './src/engine/orchestrator/RegionOrchestrator.js';
+	import { DefaultResourceTypes } from './src/engine/worldgen/DefaultResources.js';
+	import { DefaultRecipes, DefaultProcessedResourceTypes } from './src/engine/resolution/DefaultRecipes.js';
+	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
+	import { visualForShipment } from './src/engine/visuals/CargoVisual.js';
+	import { ShipmentState } from './src/engine/trade/Shipment.js';
+	import { ControlMode } from './src/engine/world/CityState.js';
+
+	const setting = {
+		seed: 1,
+		nodeCount: 6,
+		regionSize: 200,
+		tickIntervalMs: 150,
+	};
+
+	let region, orchestrator, cargoRegistry;
+	let canvas, ctx;
+	let animTimer = null;
+	let tickCount = 0;
+
+	function hexToRgb ( hex ) {
+		return [ ( hex >> 16 ) & 255, ( hex >> 8 ) & 255, hex & 255 ];
+	}
+
+	function build () {
+
+		setting.seed = parseInt( document.getElementById( 'seed' ).value, 10 ) || 1;
+		setting.nodeCount = parseInt( document.getElementById( 'nodeCount' ).value, 10 ) || 6;
+
+		region = new RegionState( 'preview-region', 'Preview Region' );
+		for ( const rt of DefaultResourceTypes ) region.resources.register( rt );
+		for ( const rt of DefaultProcessedResourceTypes ) region.resources.register( rt );
+		for ( const recipe of DefaultRecipes ) region.recipes.register( recipe );
+
+		new RegionMapGenerator( setting.seed, {
+			nodeCount: setting.nodeCount,
+			width: setting.regionSize,
+			height: setting.regionSize,
+			minSpacing: 40,
+			citySize: { width: 24, height: 24 },
+		} ).generate( region );
+
+		orchestrator = new RegionOrchestrator( region, { seed: setting.seed, automatedTickInterval: 2, maxLotsPerAutomatedTick: 4 } );
+		cargoRegistry = createDefaultCargoVisualRegistry();
+		tickCount = 0;
+
+		setupCanvas();
+		if ( animTimer ) clearInterval( animTimer );
+		animTimer = setInterval( step, setting.tickIntervalMs );
+
+	}
+
+	function setupCanvas () {
+
+		if ( canvas ) canvas.remove();
+
+		canvas = document.createElement( 'canvas' );
+		canvas.width = setting.regionSize;
+		canvas.height = setting.regionSize;
+		canvas.style.cssText = 'position:absolute; left:10px; top:120px; transform: scale(3.5); transform-origin: top left; image-rendering: pixelated;';
+		document.body.appendChild( canvas );
+
+		ctx = canvas.getContext( '2d' );
+
+	}
+
+	// Finds which city owns a facility id - not exposed by TradeResolver,
+	// small enough to just do here.
+	function cityOfFacility ( facilityId ) {
+
+		for ( const city of region.cities.values() ) {
+			if ( city.facilities.has( facilityId ) ) return city;
+		}
+		return null;
+
+	}
+
+	// Maps a shipment's overall progress (0..1 over its whole route) to a
+	// screen position, walking its corridor path segment by segment.
+	function shipmentPosition ( shipment ) {
+
+		const originCity = cityOfFacility( shipment.originFacilityId );
+		if ( ! originCity ) return null;
+
+		if ( shipment.path.length === 0 ) return originCity.regionPosition; // same-city move
+
+		let currentCity = originCity;
+		let traveled = shipment.progress * shipment.distance;
+
+		for ( let i = 0; i < shipment.path.length; i ++ ) {
+
+			const corridor = region.corridors.get( shipment.path[ i ] );
+			if ( ! corridor ) return currentCity.regionPosition;
+
+			const nextCity = region.cities.get( corridor.other( currentCity.id ) );
+			if ( ! nextCity ) return currentCity.regionPosition;
+
+			const isLastSegment = i === shipment.path.length - 1;
+
+			if ( traveled < corridor.distance || isLastSegment ) {
+
+				const t = corridor.distance === 0 ? 1 : Math.min( 1, Math.max( 0, traveled / corridor.distance ) );
+				const a = currentCity.regionPosition, b = nextCity.regionPosition;
+				return { x: a.x + ( b.x - a.x ) * t, y: a.y + ( b.y - a.y ) * t };
+
+			}
+
+			traveled -= corridor.distance;
+			currentCity = nextCity;
+
+		}
+
+		return currentCity.regionPosition;
+
+	}
+
+	function step () {
+
+		orchestrator.tick();
+		tickCount ++;
+		draw();
+
+	}
+
+	function draw () {
+
+		ctx.fillStyle = '#141820';
+		ctx.fillRect( 0, 0, canvas.width, canvas.height );
+
+		// Corridors, colored/thickened by current load vs capacity.
+		for ( const corridor of region.corridors.values() ) {
+
+			const a = region.cities.get( corridor.cityAId ).regionPosition;
+			const b = region.cities.get( corridor.cityBId ).regionPosition;
+			const utilization = corridor.capacity > 0 ? Math.min( 1, corridor.load / corridor.capacity ) : 0;
+
+			ctx.strokeStyle = utilization > 0.7 ? '#e05a4f' : ( utilization > 0.3 ? '#d9b44a' : '#3a4658' );
+			ctx.lineWidth = 0.6 + utilization * 1.4;
+			ctx.beginPath();
+			ctx.moveTo( a.x, a.y );
+			ctx.lineTo( b.x, b.y );
+			ctx.stroke();
+
+		}
+
+		// Cities, sized by facility count, tinted by control mode.
+		for ( const city of region.cities.values() ) {
+
+			const pos = city.regionPosition;
+			const r = 2 + Math.min( 8, city.facilities.size / 15 );
+
+			ctx.fillStyle = city.controlMode === ControlMode.MANAGED ? '#4a9edd' : '#84dd4a';
+			ctx.beginPath();
+			ctx.arc( pos.x, pos.y, r, 0, Math.PI * 2 );
+			ctx.fill();
+
+		}
+
+		// Every in-transit cross-city shipment as its own moving dot -
+		// many simultaneously, which the real sprite system can't do.
+		let visibleShipments = 0;
+		for ( const shipment of region.shipments.values() ) {
+
+			if ( shipment.state !== ShipmentState.IN_TRANSIT ) continue;
+			if ( shipment.path.length === 0 ) continue; // same-city moves aren't spatial in region view
+
+			const pos = shipmentPosition( shipment );
+			if ( ! pos ) continue;
+
+			visibleShipments ++;
+			const visual = visualForShipment( shipment, cargoRegistry, region.resources );
+			const [ r, g, b ] = visual ? hexToRgb( visual.tint ) : [ 255, 255, 255 ];
+
+			ctx.fillStyle = `rgb(${r},${g},${b})`;
+			ctx.beginPath();
+			ctx.arc( pos.x, pos.y, 1.4, 0, Math.PI * 2 );
+			ctx.fill();
+
+		}
+
+		const allShipments = Array.from( region.shipments.values() );
+		const inTransit = allShipments.filter( s => s.state === ShipmentState.IN_TRANSIT ).length;
+		const delivered = allShipments.filter( s => s.state === ShipmentState.DELIVERED ).length;
+		const totalFacilities = Array.from( region.cities.values() ).reduce( ( n, c ) => n + c.facilities.size, 0 );
+
+		const summary = {
+			tick: tickCount,
+			cities: region.cities.size,
+			corridors: region.corridors.size,
+			totalFacilities,
+			shipmentsCreated: allShipments.length,
+			shipmentsInTransit: inTransit,
+			shipmentsVisibleThisFrame: visibleShipments,
+			shipmentsDelivered: delivered,
+		};
+
+		document.getElementById( 'debug' ).textContent = JSON.stringify( summary );
+		window.__engineRegionPreview = summary;
+
+	}
+
+	document.getElementById( 'build' ).addEventListener( 'click', build );
+	build();
+
+</script>
+
+<div style="position:absolute; left:10px; top:10px; z-index:1; background:rgba(0,0,0,0.6); padding:8px; font:12px monospace;">
+	<div>engine region preview (multi-city + live shipments)</div>
+	<label>seed <input id="seed" type="number" value="1" min="1" max="9999" style="width:60px;"></label>
+	<label>cities <input id="nodeCount" type="number" value="6" min="2" max="12" style="width:50px;"></label>
+	<button id="build">BUILD + RUN</button>
+</div>
+<div id="debug" style="position:absolute; left:10px; bottom:10px; font:12px monospace; background:rgba(0,0,0,0.5); padding:4px 8px; max-width:90%; word-wrap:break-word;"></div>
+
+</body></html>
