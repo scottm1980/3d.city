@@ -141,14 +141,51 @@ truncation/off-by-one), every sampled instance's color matched its
 `CargoVisual` tint to floating-point precision, positions were finite and
 in-bounds, and unused capacity was correctly hidden.
 
+## What's also done: `dev_engine_view3d.html`
+
+The first dev preview to drive the game's **real** production rendering
+code (`src/city3d/View.js`, `Hub.js`) instead of hand-rolled canvas or
+Three.js. Deliberately never calls `Main.init()` or `Main.initWorker()` —
+no Worker is booted, GPL `CityGame.js` is never loaded or executed. Only
+`View`/`Hub`/`AppState` are constructed directly, and `AppState.tilesData`
+is fed from `CityMapGenerator` through a minimal tile-value adapter using
+`Tile.js`'s own documented constants (`RIVER=2` for plain water, `DIRT=0`
+for plain ground — read for interop, not reused as logic) instead of a
+`WorkerBridge` message. Water vs. ground only for this first pass — no
+shoreline blending, trees, or buildings yet.
+
+Two real bugs found and fixed via actual browser verification, not code
+review: `initRenderer()` unconditionally calls `AppState.main.start()`
+assuming `Main.init()` already ran (fixed with a no-op stub, since the real
+`Main.init()` would boot the Worker/`CityGame.js` this harness exists to
+avoid), and the real game's title/menu overlay stays visible until
+whatever normally clears it runs — this harness skips that, so an explicit
+`view3d.clearIntro()` call was added.
+
+Verified with software-rendered WebGL: zero JS errors, `paintMap()`
+completes with tile counts matching exactly (222 water + 8994 ground =
+9216 = 96×96). The screenshot was partially obstructed by a separate
+`Pool.js` loading-status overlay unrelated to rendering correctness (not
+chased down — cosmetic, not a correctness question), so verification went
+past pixels and inspected the real Three.js scene graph directly instead:
+`AppState.view3d.land` contains exactly 36 real textured `Mesh` chunks,
+precisely matching `(96/16)² = 36` — the actual 16×16-tile chunked
+texture-atlas architecture documented above, not a coincidence. Confirms
+the production rendering pipeline genuinely painted `src/engine`'s terrain
+data using its real texture system.
+
 ## What's still open
 
-- A tile-encoding decision for terrain/zoning that doesn't require
-  replicating the GPL numeric ID table `View.js` currently reads directly.
-- Actually integrating this into `View.js`'s live scene (these previews
-  are standalone pages, not wired into the running game's camera/controls/
-  UI) and building real vehicle geometry (the box placeholder here proved
-  the mechanism, not the art).
+- The `Pool.js` loading-status overlay that stayed visible over the
+  rendered terrain — not investigated further; likely gated on full asset
+  preload (including DRACO models unrelated to this water/ground-only
+  test) rather than anything wrong with the render itself.
+- Richer tile encoding: shoreline blending, trees, and buildings — this
+  pass proved water/ground only, deliberately the minimal safe case.
+- Porting the multi-instance vehicle / multi-city work from
+  `dev_engine_region_3d.html` into `View.js`'s actual scene, camera, and
+  Hub UI (still a standalone page today) — and building real vehicle
+  geometry (the box placeholder proved the mechanism, not the art).
 - Eventually: replacing `CityGame.js` as the Worker's actual entry point
   and repointing `utils/rollup.config.city.js`, once the above make that
   safe to do without regressing the shipping game.
