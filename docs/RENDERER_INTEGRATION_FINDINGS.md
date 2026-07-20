@@ -311,10 +311,52 @@ blending needs either a completed live-render empirical test (the
 loading-overlay blocker is now resolved, so this is unblocked for a
 follow-up) or acceptance of partial/asymmetric coverage.
 
+## Shoreline blending, round 2: real obstacles, still unresolved
+
+With the loading-overlay fix in hand, made a second attempt: built a
+4-quadrant test map placing the same candidate tile id with water at each
+of the 4 cardinal `tilesData` neighbor directions in one scene, so only
+the correctly-oriented quadrant should show a seamless edge — a
+decisive, single-screenshot test in principle.
+
+Hit two compounding, genuine obstacles in this environment rather than a
+knowledge gap:
+1. A near-vertical camera angle (`cam.vertical` close to 90) breaks the
+   water plane's geometry (`THREE.BufferGeometry` NaN bounding-box/sphere
+   warnings) — reverted to default angles, which come with more
+   perspective distortion and make edge orientation harder to read
+   cleanly at a distance.
+2. Software-rendered WebGL (`swiftshader`, no real GPU in this sandbox)
+   runs this scene at ~2 FPS, and the loading overlay's fade-out (an
+   `setInterval`-driven timer) did not reliably complete even after 9+
+   seconds of wait — plausibly because the interval competes with a main
+   thread this saturated. Screenshots stayed tinted/darkened by the
+   still-visible overlay, and cropped close-ups of the water/land
+   boundaries were too low-fidelity at this distance and lighting to
+   confidently distinguish "wavy shoreline blend" from "plain straight
+   edge" — exactly the distinction this test exists to make.
+
+Started down a more precise alternative — reading the composited ground
+texture (`MAT_LAND[layer].map`, a GPU-copy destination written by
+`copyTextureToTexture`) directly via a WebGL render-target readback,
+bypassing screenshot lighting/compression entirely — but did not complete
+it; it needs lower-level renderer API work disproportionate to spend
+further on this one cosmetic feature right now, next to everything else
+this session accomplished.
+
+**Honest conclusion**: shoreline blending is not a knowledge gap anymore
+(the atlas, slicing formula, and partial shape classification are solid,
+documented above) — it's blocked on reliably verifying world-space
+orientation in this specific software-rendering sandbox. The right next
+attempt is either the texture-readback approach (precise, avoids the
+rendering-fidelity problem entirely) or running the verification
+somewhere with real GPU-accelerated WebGL.
+
 ## What's still open
 
-- Shoreline blending (see above) — now unblocked for a follow-up attempt
-  since the loading-overlay issue is fixed, but not completed here.
+- Shoreline blending — see round 2 above. Not a matter of more guessing;
+  needs either the texture-readback approach or a non-software-rendered
+  environment to finish verifying.
 - Porting the multi-instance vehicle / multi-city work from
   `dev_engine_region_3d.html` into `View.js`'s actual scene, camera, and
   Hub UI (still a standalone page today) — and building real vehicle
