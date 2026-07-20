@@ -116,16 +116,39 @@ spike). The screenshot shows dots queued densely along corridor lines like
 real freight traffic, visibly congesting between cities — the exact
 "watch a real bottleneck" mechanic the whole design was chasing.
 
+## What's also done: `dev_engine_region_3d.html`
+
+The first dev preview to use the project's real Three.js vendor code
+(`src/three`, `src/jsm/controls/OrbitControls.js`) instead of a flat 2D
+canvas — answering the concrete technical question behind the multi-vehicle
+work: can a single `InstancedMesh` represent hundreds of independently
+positioned, independently colored, independently moving shipments at once?
+That's the actual fix for the real sprite system's one-instance-per-type
+limitation. Cities render as spheres sized by facility count and tinted by
+control mode, corridors as lines colored by real-time load-vs-capacity,
+every in-transit cross-city shipment as an `InstancedMesh` instance tinted
+by Tier 6's cargo visuals, unused capacity hidden via zero-scale matrices.
+
+Verified with software-rendered WebGL (`--use-gl=swiftshader`, since
+headless Chromium has no GPU): zero JS errors, real WebGL context, and a
+screenshot confirming correct 3D positioning matching the 2D version's
+topology. For the vehicle instances specifically — too small to visually
+confirm color under lighting from a screenshot — verification went past
+pixels and read the actual `instanceMatrix`/`instanceColor` GPU buffers
+directly, checked against the engine's own data: rendered instance count
+(95) exactly matched in-transit cross-city shipment count (no
+truncation/off-by-one), every sampled instance's color matched its
+`CargoVisual` tint to floating-point precision, positions were finite and
+in-bounds, and unused capacity was correctly hidden.
+
 ## What's still open
 
-- A real `View.js`/Three.js integration path (all three dev previews use a
-  flat 2D canvas, not the actual 3D renderer) — needs a tile-encoding
-  decision that doesn't require replicating the GPL numeric ID table
-  exactly, and porting the multi-instance vehicle / multi-city node
-  approach proven above into real Three.js geometry (likely
-  `InstancedMesh`, per the GPU-driven instancing item in
-  `GRAPHICS_ENGINE_UPGRADE.md` — the cargo visuals were already designed
-  with that in mind).
+- A tile-encoding decision for terrain/zoning that doesn't require
+  replicating the GPL numeric ID table `View.js` currently reads directly.
+- Actually integrating this into `View.js`'s live scene (these previews
+  are standalone pages, not wired into the running game's camera/controls/
+  UI) and building real vehicle geometry (the box placeholder here proved
+  the mechanism, not the art).
 - Eventually: replacing `CityGame.js` as the Worker's actual entry point
   and repointing `utils/rollup.config.city.js`, once the above make that
   safe to do without regressing the shipping game.
