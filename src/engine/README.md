@@ -112,13 +112,31 @@ recipes, and multi-city regions, which have no equivalent in the original.
   vehicles. `DefaultCargoVisuals.js` is example content covering every
   resource in `DefaultRecipes.js`, not a final art pass.
 
+- **`orchestrator/RegionOrchestrator.js`** — Tier 7, engine-side half only.
+  `tick()` runs `TradeResolver.tick()`, then sweeps every city (any control
+  mode) with `ZoningTool.reattempt()` since picking up a previously-blocked
+  lot isn't a control decision, then grows `automated` cities via
+  `TownCharterTool` - but only on their due tick, not every tick.
+  `automatedTickInterval` is the real, verified fidelity knob for the
+  "managed cities get full fidelity, automated get coarse" split the plan
+  calls for: each automated city is phase-offset by a hash of its id (so
+  they don't all land on the same tick) and only grows on roughly 1-in-N
+  ticks. Player zoning on a managed city goes through
+  `orchestrator.zoningTool` directly - the orchestrator never auto-zones a
+  managed city. `tick()` returns a `REGION_TICK` message via Tier 1's
+  `tickMessage()` envelope, the first thing in this codebase to actually
+  use it.
+
 ## Deliberately not here yet
 
-- The region orchestrator that replaces `CityGame.js` (Tier 7) - including
-  the per-tick loop that actually calls `TradeResolver.tick()`,
-  `ZoningTool.reattempt()`, and `TownCharterTool` for every city, and
-  wiring shipments into the real `src/traffic` vehicle-agent system so
-  they move and render using the `CargoVisual`s this tier defines.
+- Tier 7's other half: wiring `TradeResolver`'s `Shipment`s into the real
+  `src/traffic` vehicle-agent system (`TrafficWorld`/`Car`/`Road`) and
+  `src/city3d` rendering, and replacing `CityGame.js`/`WorkerBridge.js` for
+  real. `TrafficWorld` is a browser-coupled module (uses
+  `window.localStorage`, assumes one city's coordinate space, has no
+  concept of inter-city corridors) - integrating it is real work that
+  can't be verified headlessly the way everything above was, and needs an
+  actual dev-server/browser pass instead of a Node script.
 
 This is a data-model skeleton meant to unblock those tiers, not a working
 simulation on its own.

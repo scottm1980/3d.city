@@ -35,3 +35,5 @@ export { TownCharterTool, DefaultTownCharter } from './tools/TownCharterTool.js'
 
 export { CargoVisual, CargoVisualRegistry, ModelVariant, visualForShipment } from './visuals/CargoVisual.js';
 export { DefaultCargoVisuals, DefaultCargoCategoryFallbacks, createDefaultCargoVisualRegistry } from './visuals/DefaultCargoVisuals.js';
+
+export { RegionOrchestrator } from './orchestrator/RegionOrchestrator.js';
