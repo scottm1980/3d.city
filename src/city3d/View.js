@@ -1508,7 +1508,7 @@ export class View {
 
         let waterGeo = new THREE.PlaneGeometry( this.mapSize[0], this.mapSize[1], 2, 2 );
         waterGeo.rotateX( -Math.PI * 0.5 );
-        waterGeo.translate( (this.mapSize[0]*0.5)-0.5, 0, (this.mapSize[0]*0.5)-0.5 );
+        waterGeo.translate( (this.mapSize[0]*0.5)-0.5, 0, (this.mapSize[1]*0.5)-0.5 );
 
         this.material.water.repeat.set(this.mapSize[0]*0.125, this.mapSize[1]*0.125)
      
@@ -2430,7 +2430,7 @@ export class View {
 					if(r===8) r = Math.floor(Math.random()*7)//r=8// big middle tree
 
 					if( AppState.withHeight && ty > 0.5 ){
-						if( x===0 || y===0 || x===this.mapSize[0]-1 || y===this.mapSize[0]-1) ty = 0.5
+						if( x===0 || y===0 || x===this.mapSize[0]-1 || y===this.mapSize[1]-1) ty = 0.5
 					}
 
 					this.addTree( x, ty, y, r, layer );
