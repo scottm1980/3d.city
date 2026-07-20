@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine real-renderer vehicles preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+<link type="text/css" rel="stylesheet" href="index.css">
+</head>
+<style>
+#status { position:absolute; left:10px; top:10px; z-index:10; font:12px monospace; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; max-width:90%; }
+</style>
+<script type="module">
+	// Seventh dev preview: ports the multi-city/vehicle work proven in
+	// dev_engine_region_3d.html (a standalone Three.js scene) into the
+	// REAL View.js scene instead - the actual ask after
+	// dev_engine_view3d_buildings.html proved single-city terrain and
+	// buildings. Still never calls Main.init()/boots a Worker/loads GPL
+	// CityGame.js.
+	//
+	// View.js's internal state (this.land, mapSize, AppState.tilesData)
+	// is fundamentally single-map-shaped - there's no "second city" slot
+	// to render into without refactoring View.js itself, which this pass
+	// deliberately does not attempt. Instead: two real cities are placed
+	// side by side inside ONE combined tilesData grid (a gap of plain
+	// ground between them stands in for the corridor), so View.js renders
+	// both with its completely unmodified, real terrain/building
+	// pipeline. A real 2-city RegionState (CorridorEdge, TradeResolver,
+	// RegionOrchestrator - all proven Tier 1-7 code) drives an actual
+	// mine-city/mill-city trade scenario, and every in-transit cross-city
+	// Shipment is rendered as an InstancedMesh instance added directly to
+	// view3d.scene, colored by Tier 6's cargo visuals - the same
+	// mechanism verified in dev_engine_region_3d.html, now live in the
+	// real renderer's own scene graph instead of a standalone one.
+	import { View } from './src/city3d/View.js';
+	import { Hub } from './src/city3d/Hub.js';
+	import { AppState } from './src/AppState.js';
+	import * as THREE from './src/three/three.module.js';
+
+	import { CityState, ControlMode } from './src/engine/world/CityState.js';
+	import { CityMapGenerator } from './src/engine/worldgen/CityMapGenerator.js';
+	import { TerrainType } from './src/engine/worldgen/Terrain.js';
+	import { ResourceEndowment } from './src/engine/world/ResourceEndowment.js';
+	import { RegionState } from './src/engine/world/RegionState.js';
+	import { CorridorEdge } from './src/engine/world/CorridorEdge.js';
+	import { ZoneType } from './src/engine/world/ZoneType.js';
+	import { ZoneResolver, geographicResourceIds, developLot, footprintTiles } from './src/engine/resolution/ZoneResolver.js';
+	import { DefaultResourceTypes, DefaultResourceRules } from './src/engine/worldgen/DefaultResources.js';
+	import { DefaultRecipes, DefaultProcessedResourceTypes } from './src/engine/resolution/DefaultRecipes.js';
+	import { RegionOrchestrator } from './src/engine/orchestrator/RegionOrchestrator.js';
+	import { availableResourceIds } from './src/engine/trade/TradeResolver.js';
+	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
+	import { visualForShipment } from './src/engine/visuals/CargoVisual.js';
+	import { ShipmentState } from './src/engine/trade/Shipment.js';
+
+	const TILE_WATER = 2;
+	const TILE_GROUND = 0;
+	const TILE_TREE_BASE = 21;
+	const TOOL_ID = { [ZoneType.RESIDENTIAL]: 1, [ZoneType.COMMERCIAL]: 2, [ZoneType.INDUSTRIAL]: 3 };
+
+	const CITY_SIZE = 40;
+	const GAP = 24;
+	const COMBINED_W = CITY_SIZE * 2 + GAP;
+	const COMBINED_H = CITY_SIZE;
+	const MAX_VEHICLE_INSTANCES = 200;
+
+	function status ( s ) { document.getElementById( 'status' ).textContent = s; }
+	function treeVariant ( x, y ) { return TILE_TREE_BASE + ( ( x * 7 + y * 13 ) % 8 ); }
+	function hexToThreeColor ( hex ) { return new THREE.Color( ( (hex>>16)&255 )/255, ( (hex>>8)&255 )/255, (hex&255)/255 ); }
+
+	// --- Simulation: a real 2-city RegionState, mine city -> mill city ---
+
+	function buildSimulation () {
+
+		const region = new RegionState( 'preview-region', 'Preview Region' );
+		for ( const rt of DefaultResourceTypes ) region.resources.register( rt );
+		for ( const rt of DefaultProcessedResourceTypes ) region.resources.register( rt );
+		for ( const recipe of DefaultRecipes ) region.recipes.register( recipe );
+
+		const mineCity = new CityState( 'mine', 'Ironhaven', { width: CITY_SIZE, height: CITY_SIZE, controlMode: ControlMode.AUTOMATED, regionPosition: { x: CITY_SIZE/2, y: CITY_SIZE/2 } } );
+		const millCity = new CityState( 'mill', 'Steeltown', { width: CITY_SIZE, height: CITY_SIZE, controlMode: ControlMode.MANAGED, regionPosition: { x: CITY_SIZE*2 + GAP - CITY_SIZE/2, y: CITY_SIZE/2 } } );
+
+		new CityMapGenerator( 1 ).generate( mineCity );
+		new CityMapGenerator( 2 ).generate( millCity );
+
+		// Guarantee the mine city actually has iron_ore + coal, same
+		// reliability trick as the original Tier 4 test - procedural
+		// placement is real but not guaranteed to land exactly where a
+		// small demo city needs it.
+		mineCity.lotAt( 5, 5 ).resourceEndowment = new ResourceEndowment( 'iron_ore', 1 );
+		mineCity.lotAt( 5, 5 ).terrain = TerrainType.MOUNTAIN;
+		mineCity.lotAt( 10, 5 ).resourceEndowment = new ResourceEndowment( 'coal', 1 );
+		mineCity.lotAt( 10, 5 ).terrain = TerrainType.HILLS;
+
+		region.addCity( mineCity );
+		region.addCity( millCity );
+		region.addCorridor( new CorridorEdge( 'road1', mineCity.id, millCity.id, { distance: GAP + CITY_SIZE, capacity: 30 } ) );
+
+		const resolver = new ZoneResolver( region.recipes, geographicResourceIds( DefaultResourceRules ) );
+
+		// Zone the guaranteed resource lots first so the mine/coal
+		// facilities exist from tick 1.
+		for ( const [ lx, ly ] of [ [5,5], [10,5] ] ) {
+			const lot = mineCity.lotAt( lx, ly );
+			lot.zoneType = ZoneType.INDUSTRIAL;
+			const recipe = resolver.resolve( mineCity, lot, new Set() );
+			if ( recipe ) developLot( mineCity, lot, recipe );
+		}
+
+		const orchestrator = new RegionOrchestrator( region, { seed: 1, automatedTickInterval: 1, maxLotsPerAutomatedTick: 3 } );
+
+		return { region, mineCity, millCity, resolver, orchestrator };
+
+	}
+
+	// Finds an actually-clear spot for the steel_mill test lot, rather
+	// than hardcoding a position - fillCity's dense grid may have already
+	// claimed footprints nearby, and footprintTiles() (the same check
+	// resolve() uses) is the honest way to confirm clearance rather than
+	// guessing at a gap.
+	function findClearIndustrialSpot ( city ) {
+
+		for ( const lot of city.lots ) {
+
+			if ( lot.terrain === TerrainType.WATER || lot.isDeveloped ) continue;
+			if ( footprintTiles( city, lot, 3 ) ) return lot;
+
+		}
+
+		return null;
+
+	}
+
+	// Fills the rest of each city (outside the guaranteed resource lots)
+	// with a modest, dense-but-bounded R/C/I grid, reusing the proven
+	// footprint-clearance mechanism - real, not synthetically spaced.
+	function fillCity ( city, region, resolver, zoneCycle ) {
+
+		const available = new Set( [ 'labor' ] );
+		let cycleIndex = 0;
+
+		for ( let y = 3; y < city.height - 3; y += 5 ) {
+			for ( let x = 3; x < city.width - 3; x += 5 ) {
+				const lot = city.lotAt( x, y );
+				if ( ! lot || lot.terrain === TerrainType.WATER || lot.isDeveloped ) continue;
+				lot.zoneType = zoneCycle[ cycleIndex % zoneCycle.length ];
+				cycleIndex ++;
+				const recipe = resolver.resolve( city, lot, available );
+				if ( recipe ) developLot( city, lot, recipe );
+			}
+		}
+
+	}
+
+	// --- Combined tilesData: two real cities side by side, one grid ---
+
+	function buildCombinedTilesData ( mineCity, millCity ) {
+
+		const data = new Float32Array( COMBINED_W * COMBINED_H ).fill( TILE_GROUND );
+
+		function stamp ( city, offsetX ) {
+			for ( const lot of city.lots ) {
+				const wx = lot.x + offsetX, wy = lot.y;
+				const n = wx + wy * COMBINED_W;
+				if ( lot.terrain === TerrainType.WATER ) data[ n ] = TILE_WATER;
+				else if ( lot.terrain === TerrainType.FOREST ) data[ n ] = treeVariant( lot.x, lot.y );
+				else data[ n ] = TILE_GROUND;
+			}
+		}
+
+		stamp( mineCity, 0 );
+		stamp( millCity, CITY_SIZE + GAP );
+
+		return data;
+
+	}
+
+	function placeBuildings ( city, offsetX ) {
+
+		let count = 0;
+		for ( const lot of city.lots ) {
+			if ( ! lot.isDeveloped || lot.facility === null ) continue; // only anchor lots
+			const toolId = TOOL_ID[ lot.zoneType ];
+			if ( toolId === undefined ) continue;
+			AppState.view3d.selectTool( toolId );
+			AppState.view3d.build( lot.x + offsetX, lot.y );
+			count ++;
+		}
+		return count;
+
+	}
+
+	// --- Vehicle layer: real InstancedMesh in the real scene, same
+	// technique as dev_engine_region_3d.html ---
+
+	let vehicleMesh, cargoRegistry, region, mineCity, millCity, orchestrator, resolver;
+	let millLot = null; // set once a clear spot is found, after fillCity runs
+	const dummy = new THREE.Object3D();
+	const hiddenMatrix = new THREE.Matrix4().makeScale( 0, 0, 0 );
+
+	function worldAnchor ( city, offsetX ) {
+		return { x: offsetX + city.width / 2, z: city.height / 2 };
+	}
+
+	function updateVehicleInstances () {
+
+		const mineAnchor = worldAnchor( mineCity, 0 );
+		const millAnchor = worldAnchor( millCity, CITY_SIZE + GAP );
+
+		let i = 0;
+		for ( const shipment of region.shipments.values() ) {
+
+			if ( i >= MAX_VEHICLE_INSTANCES ) break;
+			if ( shipment.state !== ShipmentState.IN_TRANSIT ) continue;
+			if ( shipment.path.length === 0 ) continue; // intra-city moves aren't spatial here
+
+			// Only one corridor exists (mine <-> mill), so progress maps
+			// directly onto the mine-anchor -> mill-anchor segment; a
+			// multi-hop region would need the same segment-walk as
+			// dev_engine_region_3d.html's shipmentPosition().
+			const originIsMine = mineCity.facilities.has( shipment.originFacilityId );
+			const a = originIsMine ? mineAnchor : millAnchor;
+			const b = originIsMine ? millAnchor : mineAnchor;
+			const t = shipment.progress;
+
+			dummy.position.set( a.x + ( b.x - a.x ) * t, 1, a.z + ( b.z - a.z ) * t );
+			dummy.scale.set( 1, 1, 1 );
+			dummy.updateMatrix();
+			vehicleMesh.setMatrixAt( i, dummy.matrix );
+
+			const visual = visualForShipment( shipment, cargoRegistry, region.resources );
+			vehicleMesh.setColorAt( i, visual ? hexToThreeColor( visual.tint ) : new THREE.Color( 0xffffff ) );
+
+			i ++;
+
+		}
+
+		for ( let j = i; j < MAX_VEHICLE_INSTANCES; j ++ ) vehicleMesh.setMatrixAt( j, hiddenMatrix );
+
+		vehicleMesh.instanceMatrix.needsUpdate = true;
+		if ( vehicleMesh.instanceColor ) vehicleMesh.instanceColor.needsUpdate = true;
+
+		return i;
+
+	}
+
+	function tickSimulation () {
+
+		orchestrator.tick();
+
+		if ( millLot && millLot.facility === null ) {
+			const recipe = resolver.resolve( millCity, millLot, availableResourceIds( region ) );
+			if ( recipe ) developLot( millCity, millLot, recipe );
+		}
+
+		const rendered = updateVehicleInstances();
+
+		const all = Array.from( region.shipments.values() );
+		const summary = {
+			tick: region.tick,
+			mineFacilities: mineCity.facilities.size,
+			millFacilities: millCity.facilities.size,
+			millSteelMillResolved: millLot !== null && millLot.facility !== null,
+			shipmentsCreated: all.length,
+			shipmentsInTransit: all.filter( s => s.state === ShipmentState.IN_TRANSIT ).length,
+			shipmentsDelivered: all.filter( s => s.state === ShipmentState.DELIVERED ).length,
+			renderedVehicleInstances: rendered,
+		};
+		document.getElementById( 'status' ).textContent = JSON.stringify( summary );
+		window.__engineView3DVehiclesReady = summary;
+		// Exposed for automated verification of the actual instance
+		// buffers against real engine state, not just a summary count.
+		window.__engineView3DVehiclesDebug = { region, mineCity, millCity, vehicleMesh, cargoRegistry, CITY_SIZE, GAP };
+
+	}
+
+	async function run () {
+
+		try {
+
+			status( 'building simulation (mine city -> mill city)...' );
+			( { region, mineCity, millCity, resolver, orchestrator } = buildSimulation() );
+
+			const zoneCycle = [ ZoneType.RESIDENTIAL, ZoneType.COMMERCIAL, ZoneType.INDUSTRIAL ];
+			fillCity( mineCity, region, resolver, zoneCycle );
+			fillCity( millCity, region, resolver, zoneCycle );
+
+			// Pick the steel_mill test lot only after fillCity has claimed
+			// its dense grid, so it's a genuinely clear spot, not a guess.
+			millLot = findClearIndustrialSpot( millCity );
+			if ( millLot ) millLot.zoneType = ZoneType.INDUSTRIAL;
+
+			const tilesData = buildCombinedTilesData( mineCity, millCity );
+
+			status( 'constructing real View/Hub (no Worker, no CityGame.js)...' );
+			AppState.hub = new Hub();
+			AppState.view3d = new View();
+			AppState.main = { start () {}, sendTool () {} };
+
+			status( 'initRenderer()...' );
+			await AppState.view3d.initRenderer();
+
+			status( 'paintMap() on the combined two-city grid...' );
+			AppState.tilesData = tilesData;
+			AppState.view3d.paintMap( [ COMBINED_W, COMBINED_H ], false );
+			AppState.view3d.clearIntro();
+			AppState.hub.start();
+
+			status( 'placing real buildings in both cities...' );
+			const mineBuilt = placeBuildings( mineCity, 0 );
+			const millBuilt = placeBuildings( millCity, CITY_SIZE + GAP );
+
+			status( 'adding real InstancedMesh vehicle layer to view3d.scene...' );
+			cargoRegistry = createDefaultCargoVisualRegistry();
+			const vehicleGeometry = new THREE.BoxGeometry( 1.2, 1.2, 1.2 );
+			const vehicleMaterial = new THREE.MeshStandardMaterial( { vertexColors: true } );
+			vehicleMesh = new THREE.InstancedMesh( vehicleGeometry, vehicleMaterial, MAX_VEHICLE_INSTANCES );
+			AppState.view3d.scene.add( vehicleMesh );
+
+			AppState.view3d.center.x = COMBINED_W / 2;
+			AppState.view3d.center.z = COMBINED_H / 2;
+			AppState.view3d.cam.distance = 140;
+			AppState.view3d.moveCamera();
+
+			status( `running simulation ticks (mine built ${mineBuilt}, mill built ${millBuilt})...` );
+			setInterval( tickSimulation, 200 );
+			tickSimulation();
+
+		} catch ( err ) {
+
+			status( 'ERROR: ' + err.message );
+			window.__engineView3DVehiclesReady = { ok: false, error: err.message, stack: err.stack };
+			console.error( err );
+
+		}
+
+	}
+
+	run();
+
+</script>
+
+<div id="container"></div>
+<div id="hub"></div>
+<div id="status">starting...</div>
+
+</body></html>
