@@ -5,6 +5,7 @@ import { shortestPath } from './CorridorPathfinder.js';
 const BUFFER_TICKS = 3;      // how many ticks of input stock a facility tries to keep buffered
 const TRANSPORT_SPEED = 4;   // distance covered per tick
 const SAME_CITY_DISTANCE = 1; // no corridor needed; still takes >=1 tick to arrive
+const TRADE_TARIFF_PER_UNIT = 0.2; // per unit delivered, collected into NationalBudget's treasury alongside production tax - "revenue... + trade activity" per COUNTRY_SIM_ENGINE_PLAN's locked budget decision
 
 // Matches regional supply and demand per commodity, generates Shipments,
 // and advances them to delivery. This is the piece that makes automated
@@ -24,13 +25,20 @@ export class TradeResolver {
 
     }
 
+    // Returns this tick's economic activity - production tax on everything
+    // produced plus a trade tariff on everything delivered - for
+    // NationalBudget to collect into the treasury. TradeResolver computes
+    // it because it's already the one place tracking both quantities; it
+    // doesn't otherwise know or care about money.
     tick () {
 
         this.region.tick ++;
 
-        this._produceAndConsume();
-        this._advanceShipments();
+        const productionRevenue = this._produceAndConsume();
+        const tradeRevenue = this._advanceShipments();
         this._matchNewShipments();
+
+        return { productionRevenue, tradeRevenue, totalRevenue: productionRevenue + tradeRevenue };
 
     }
 
@@ -41,6 +49,8 @@ export class TradeResolver {
     }
 
     _produceAndConsume () {
+
+        let productionRevenue = 0;
 
         for ( const city of this.region.cities.values() ) {
 
@@ -71,6 +81,7 @@ export class TradeResolver {
 
                     const amount = output.quantity * multiplier;
                     facility.outputStock.set( output.resourceId, ( facility.outputStock.get( output.resourceId ) || 0 ) + amount );
+                    productionRevenue += amount * recipe.taxRatePerOutputUnit;
 
                 }
 
@@ -80,9 +91,13 @@ export class TradeResolver {
 
         }
 
+        return productionRevenue;
+
     }
 
     _advanceShipments () {
+
+        let tradeRevenue = 0;
 
         for ( const shipment of this.region.shipments.values() ) {
 
@@ -104,10 +119,13 @@ export class TradeResolver {
                 }
 
                 shipment.setState( ShipmentState.DELIVERED, this.region.tick );
+                tradeRevenue += shipment.quantity * TRADE_TARIFF_PER_UNIT;
 
             }
 
         }
+
+        return tradeRevenue;
 
     }
 

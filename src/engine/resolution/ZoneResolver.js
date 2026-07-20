@@ -72,6 +72,13 @@ export class ZoneResolver {
             if ( recipe.requiredZoneType !== lot.zoneType ) continue;
             if ( ! this._isSatisfiable( recipe, lot, availableResourceIds ) ) continue;
             if ( ! footprintTiles( city, lot, recipe.footprintSize ) ) continue;
+            // Budget-gated: a city can't develop what it can't afford, per
+            // the two-tier national/city budget system (locked round-2
+            // decision). A city without a budget assigned yet (bypassing
+            // RegionState.addCity(), which is how every real caller gets
+            // one) has unlimited funds - this gate is opt-in, not a new
+            // required argument.
+            if ( city.budget && recipe.buildCost > city.budget.totalFunds ) continue;
 
             return recipe;
 
@@ -111,6 +118,12 @@ export function developLot ( city, lot, recipe ) {
     for ( const footprintLot of footprint ) footprintLot.occupiedBy = facility.id;
 
     city.facilities.set( facility.id, facility );
+
+    // The spend side of resolve()'s affordability gate above - by the
+    // time we're here that check already passed, so this can't take a
+    // city's budget negative under normal flow.
+    if ( recipe.buildCost > 0 && city.budget ) city.budget.spendOn( recipe.facilityArchetype, recipe.buildCost );
+
     return facility;
 
 }

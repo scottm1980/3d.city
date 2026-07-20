@@ -64,7 +64,8 @@ export class RegionOrchestrator {
 
         this.orchestratorTick ++;
 
-        this.trade.tick();
+        const economicReport = this.trade.tick();
+        this.region.nationalBudget.tick( this.region.cities, economicReport );
         const available = availableResourceIds( this.region );
 
         const newlyDeveloped = [];
@@ -109,6 +110,8 @@ export class RegionOrchestrator {
             newlyDeveloped,
             automatedCitiesProcessed,
             activeShipments,
+            economicReport,
+            treasury: this.region.nationalBudget.treasury,
         } );
 
     }

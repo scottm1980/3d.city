@@ -12,7 +12,7 @@ export class RecipeLine {
 
 export class Recipe {
 
-    constructor ( id, { inputs = [], outputs = [], facilityArchetype, requiredZoneType, throughputPerTick = 1, footprintSize = 1 } = {} ) {
+    constructor ( id, { inputs = [], outputs = [], facilityArchetype, requiredZoneType, throughputPerTick = 1, footprintSize = 1, buildCost = 0, taxRatePerOutputUnit = 0 } = {} ) {
 
         this.id = id;
 
@@ -23,6 +23,8 @@ export class Recipe {
         this.requiredZoneType = requiredZoneType;      // ZoneType this recipe is eligible on
         this.throughputPerTick = throughputPerTick;
         this.footprintSize = footprintSize;             // side length of the square lot area this facility occupies, centered on the anchor lot
+        this.buildCost = buildCost;                     // spent from the developing city's budget on resolution - see ZoneResolver.resolve()'s affordability gate
+        this.taxRatePerOutputUnit = taxRatePerOutputUnit; // per unit produced each tick, collected into NationalBudget's treasury - see TradeResolver
 
     }
 

@@ -53,6 +53,7 @@
 	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
 	import { visualForShipment, ModelVariant } from './src/engine/visuals/CargoVisual.js';
 	import { ShipmentState } from './src/engine/trade/Shipment.js';
+	import { FacilityStatus } from './src/engine/world/Facility.js';
 
 	const TILE_WATER = 2;
 	const TILE_GROUND = 0;
@@ -109,9 +110,37 @@
 			if ( recipe ) developLot( mineCity, lot, recipe );
 		}
 
+		// Same for the steel_mill test lot in Steeltown, and - now that
+		// zoning is budget-gated (see NationalBudget) - force-placed via
+		// developLot() directly rather than resolver.resolve(), for two
+		// reasons that only exist now:
+		// 1. resolve() would always fail here anyway: no iron_ore/coal is
+		//    "available" yet this early (no tick has run to produce any),
+		//    so steel_mill's input-satisfiability check can never pass -
+		//    same reliability-trick spirit as the mine's guaranteed
+		//    ResourceEndowment overrides above, just via a direct
+		//    developLot() instead of a resource override.
+		// 2. Doing this BEFORE fillCity()'s dense grid runs reserves both
+		//    the footprint AND spends the $350 buildCost immediately,
+		//    while Steeltown's founding grant is still intact. Without
+		//    this ordering, fillCity's own candidates (which don't need
+		//    to wait on missing resources) would either claim overlapping
+		//    footprint tiles or simply outspend the steel_mill for funds
+		//    first, and this scenario's whole reason for existing - mine
+		//    ore/coal actually being demanded and shipped to a real mill -
+		//    could get starved indefinitely.
+		millLot = findClearIndustrialSpot( millCity );
+		if ( millLot ) {
+			millLot.zoneType = ZoneType.INDUSTRIAL;
+			const steelMillRecipe = region.recipes.get( 'steel_mill' );
+			if ( steelMillRecipe && millCity.budget.totalFunds >= steelMillRecipe.buildCost ) {
+				developLot( millCity, millLot, steelMillRecipe );
+			}
+		}
+
 		const orchestrator = new RegionOrchestrator( region, { seed: 1, automatedTickInterval: 1, maxLotsPerAutomatedTick: 3 } );
 
-		return { region, mineCity, millCity, resolver, orchestrator };
+		return { region, mineCity, millCity, resolver, orchestrator, millLot };
 
 	}
 
@@ -284,8 +313,8 @@
 
 		const facility = orchestrator.zoningTool.zone( millCity, lot, zoneType, availableResourceIds( region ) );
 		playerActionStatus = facility
-			? `zoned (${ toolName }) and resolved immediately as ${ facility.archetypeId }`
-			: `zoned (${ toolName }) - waiting on resources to resolve`;
+			? `zoned (${ toolName }) and resolved immediately as ${ facility.archetypeId } (Steeltown funds now $${ millCity.budget.allocation.toFixed( 0 ) })`
+			: `zoned (${ toolName }) - waiting on resources or funding to resolve (Steeltown funds: $${ millCity.budget.allocation.toFixed( 0 ) })`;
 
 		syncNewBuildings();
 
@@ -343,7 +372,7 @@
 	}
 
 	let vehicleMeshes, cargoRegistry, region, mineCity, millCity, orchestrator, resolver;
-	let millLot = null; // set once a clear spot is found, after fillCity runs
+	let millLot = null; // set (and force-developed) inside buildSimulation(), before fillCity runs
 	const dummy = new THREE.Object3D();
 	const hiddenMatrix = new THREE.Matrix4().makeScale( 0, 0, 0 );
 
@@ -424,7 +453,17 @@
 			tick: region.tick,
 			mineFacilities: mineCity.facilities.size,
 			millFacilities: millCity.facilities.size,
-			millSteelMillResolved: millLot !== null && millLot.facility !== null,
+			// facility!==null is now trivially true from tick 0 - it's
+			// force-placed (see buildSimulation()) precisely so it's not
+			// starved by budget/footprint races. status===ACTIVE is the
+			// signal that's actually still interesting: it only flips
+			// once real iron_ore+coal shipments have arrived and it's
+			// genuinely produced steel, proving the mine->mill demand
+			// chain worked, not just that the building exists.
+			millSteelMillActive: millLot !== null && millLot.facility !== null && millLot.facility.status === FacilityStatus.ACTIVE,
+			treasury: Math.round( region.nationalBudget.treasury * 10 ) / 10,
+			mineAllocation: Math.round( mineCity.budget.allocation * 10 ) / 10,
+			millAllocation: Math.round( millCity.budget.allocation * 10 ) / 10,
 			shipmentsCreated: all.length,
 			shipmentsInTransit: all.filter( s => s.state === ShipmentState.IN_TRANSIT ).length,
 			shipmentsDelivered: all.filter( s => s.state === ShipmentState.DELIVERED ).length,
@@ -446,16 +485,15 @@
 		try {
 
 			status( 'building simulation (mine city -> mill city)...' );
-			( { region, mineCity, millCity, resolver, orchestrator } = buildSimulation() );
+			// millLot (the steel_mill test lot) is force-placed inside
+			// buildSimulation() itself now, before fillCity runs - see the
+			// comment there for why budget-gating made that ordering
+			// necessary, not just a nice-to-have.
+			( { region, mineCity, millCity, resolver, orchestrator, millLot } = buildSimulation() );
 
 			const zoneCycle = [ ZoneType.RESIDENTIAL, ZoneType.COMMERCIAL, ZoneType.INDUSTRIAL ];
 			fillCity( mineCity, region, resolver, zoneCycle );
 			fillCity( millCity, region, resolver, zoneCycle );
-
-			// Pick the steel_mill test lot only after fillCity has claimed
-			// its dense grid, so it's a genuinely clear spot, not a guess.
-			millLot = findClearIndustrialSpot( millCity );
-			if ( millLot ) millLot.zoneType = ZoneType.INDUSTRIAL;
 
 			const tilesData = buildCombinedTilesData( mineCity, millCity );
 
@@ -526,6 +564,6 @@
 <div id="container"></div>
 <div id="hub"></div>
 <div id="status">starting...</div>
-<div id="instructions">Ironhaven (left city) grows on its own - AUTOMATED. Steeltown (right city) is MANAGED: pick Residential/Commercial/Industrial from the real BUILD panel below, then click a tile in Steeltown to zone it through src/engine's ZoningTool - or pick Bulldozer to demolish an existing building through BulldozeTool. Other tools (road, power, ...) are accepted by the real UI but aren't modeled yet, so they no-op.</div>
+<div id="instructions">Ironhaven (left city) grows on its own - AUTOMATED. Steeltown (right city) is MANAGED: pick Residential/Commercial/Industrial from the real BUILD panel below, then click a tile in Steeltown to zone it through src/engine's ZoningTool - or pick Bulldozer to demolish an existing building through BulldozeTool. Zoning is real-money gated: each city starts with a founding grant and earns more from production tax + trade tariffs each tick (see the treasury/allocation numbers in the status line above) - a lot you zone may sit waiting on funding, not just resources, until enough arrives. Other tools (road, power, ...) are accepted by the real UI but aren't modeled yet, so they no-op.</div>
 
 </body></html>

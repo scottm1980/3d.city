@@ -17,4 +17,16 @@ export class CityBudget {
 
     }
 
+    // Called by ZoneResolver.developLot() when a recipe with a buildCost
+    // actually resolves - the spend side of the affordability gate in
+    // resolve(). Tracked by category (Recipe.facilityArchetype) so a
+    // future budget UI can show where a city's allocation actually went,
+    // not just the running total.
+    spendOn ( category, amount ) {
+
+        this.allocation -= amount;
+        this.spend.set( category, ( this.spend.get( category ) || 0 ) + amount );
+
+    }
+
 }

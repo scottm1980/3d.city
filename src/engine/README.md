@@ -18,7 +18,21 @@ recipes, and multi-city regions, which have no equivalent in the original.
 - **`trade/`** — `Shipment`, the traceable cargo-carrying entity that makes
   automated trade observable rather than a black box.
 - **`budget/`** — `NationalBudget` and `CityBudget`, implementing the
-  two-tier allocation model locked in the engine plan.
+  two-tier allocation model locked in the engine plan for real, not just
+  as data shape: `NationalBudget.tick()` collects `TradeResolver`'s
+  per-tick production tax + trade tariff revenue into the treasury, then
+  distributes a share to every city weighted by how much infrastructure
+  it's already running (a `MIN_ALLOCATION_WEIGHT` floor so a brand new
+  city isn't stuck at zero forever). Every city gets a `STARTING_ALLOCATION`
+  founding grant on registration so the very first facility can be built
+  before a single tick has run. `ZoneResolver.resolve()` gates on
+  `Recipe.buildCost` against `city.budget.totalFunds`, and
+  `developLot()` spends it via `CityBudget.spendOn()` - a facility a city
+  can't afford stays zoned-but-undeveloped, picked up automatically once
+  funding arrives, the same graceful-wait behavior an unresolved resource
+  or footprint conflict already had. All dollar figures (`buildCost`,
+  `taxRatePerOutputUnit`, `STARTING_ALLOCATION`, `ALLOCATION_FRACTION`)
+  are content/starting points, not a tuned balance pass.
 - **`messages/`** — Worker message-type vocabulary only. Actual
   scheduling/dispatch across `managed` (full-fidelity) and `automated`
   (coarse) cities is Tier 7, not implemented here.

@@ -579,6 +579,59 @@ archetype — `retail` this time, not the earlier `housing` — proving the
 footprint was actually freed, not left in a stale state). Zero
 JS/console errors throughout.
 
+## The budget system went from inert data to a real, load-bearing gate
+
+`src/engine/budget/` had existed since Tier 4 but did nothing: `NationalBudget`/
+`CityBudget` were constructed and attached to every `CityState`, and nothing
+ever read or wrote them. Zoning was effectively free. That's fixed for real
+(full technical writeup in `src/engine/README.md`'s `budget/` section) - the
+locked "national treasury pools revenue and allocates funding to each city"
+decision is now something the simulation actually does every tick, and
+`ZoneResolver.resolve()` gates development on `Recipe.buildCost` against a
+city's live `CityBudget.totalFunds`.
+
+This surfaced a real ordering bug in `dev_engine_view3d_vehicles.html`
+specifically, worth recording because it's the kind of thing that only
+shows up once a system stops being a no-op: the steel_mill test lot was
+previously zoned *after* `fillCity()`'s dense R/C/I grid, on the theory
+that doing so guaranteed a footprint genuinely clear of what the grid had
+already claimed. That was fine when zoning was free. Once it costs real
+money, the ordering meant `fillCity()`'s cheaper candidates (housing at
+$80 vs. steel_mill's $350) could claim Steeltown's founding grant first,
+every tick, indefinitely - starving the one facility this whole demo
+exists to prove works. Fixed by force-placing the steel_mill lot (via
+`developLot()` directly, not `resolver.resolve()` - its inputs can't be
+"available" yet this early regardless of budget, so a normal resolve
+would always fail here) *before* `fillCity()` runs, reserving both the
+footprint and the budget slot while the grant is still intact - the same
+"guaranteed test fixture" spirit as the mine city's `ResourceEndowment`
+overrides, just via direct placement instead of a data override.
+
+The preview's status line and player-facing messages now surface
+`treasury`/`mineAllocation`/`millAllocation`, and `millSteelMillResolved`
+(facility exists, which is now trivially true from tick 0 given the
+force-placement above) was replaced with `millSteelMillActive`
+(`FacilityStatus.ACTIVE`, meaning it has genuinely consumed a real
+shipment of iron_ore and coal) - the signal that's actually still
+diagnostic now.
+
+Verified headlessly first (a plain Node script, not committed): a new
+city gets a founding grant and can build its first (affordable) facility
+off it alone; an expensive recipe is correctly blocked at low funds and
+resolves the instant funds arrive, with no other state disturbed;
+`NationalBudget.tick()`'s weighted allocation splits correctly
+proportional to facility count; and a full 75-tick automated-growth
+regression (mirroring the real preview's scenario) still grows past its
+seeded facilities under real budget constraints, with treasury and every
+city's allocation staying non-negative throughout. Then in-browser:
+before the ordering fix, cross-city vehicle rendering stayed at 0 for the
+first several seconds (no ore/coal demand existed yet because the mill
+lot was starved); after it, hopper-variant vehicles were rendering by
+tick 1, and the steel mill reached `FacilityStatus.ACTIVE` by tick 18 -
+confirming the full mine-demand → shipment → mill-consumption loop works
+end to end under real money constraints, not just when zoning was free.
+Zero JS/console errors throughout.
+
 ## What's still open
 
 - Shoreline blending — see round 2 above. Not a matter of more guessing;
