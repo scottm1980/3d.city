@@ -352,15 +352,56 @@ attempt is either the texture-readback approach (precise, avoids the
 rendering-fidelity problem entirely) or running the verification
 somewhere with real GPU-accelerated WebGL.
 
+## Multi-city + vehicles ported into the real View.js scene
+
+`dev_engine_view3d_vehicles.html` ports the work from the standalone
+`dev_engine_region_3d.html` into `View.js` itself. `View.js`'s internal
+state (`this.land`, `mapSize`, `AppState.tilesData`) is fundamentally
+single-map-shaped — there's no "second city" slot without refactoring
+`View.js`, which this deliberately does not attempt. Instead: two real
+cities are placed side by side inside **one combined `tilesData` grid** (a
+gap of plain ground stands in for the corridor), so `View.js` renders both
+through its completely unmodified real terrain/building pipeline. A real
+2-city `RegionState` (`CorridorEdge`, `TradeResolver`,
+`RegionOrchestrator`, `ZoneResolver`'s footprint clearance — all proven
+Tier 1-7 code) drives an actual mine-city/mill-city trade scenario, and
+every in-transit cross-city `Shipment` renders as an `InstancedMesh`
+instance added directly to `view3d.scene`, colored by Tier 6's cargo
+visuals.
+
+Caught a real bug via verification: a hardcoded steel_mill test-lot
+position sat inside another facility's footprint claimed by the dense
+placement grid, so it never resolved — footprint clearance was correctly
+blocking it. Fixed by searching for an actually-clear spot with
+`footprintTiles()` after placement runs, rather than guessing a position.
+
+Verified past summary counts into **complete** instance-buffer inspection
+— not a sample: every active vehicle instance in one run (21 of them)
+checked individually, positions matching their expected interpolation
+between the real city anchors to floating-point precision, confirmed as
+21 distinct shipment ids (not a duplicate-reading artifact), with genuine
+variety in commodity/progress values.
+
+**Noted honestly**: the water plane appears oversized/misaligned for the
+non-square combined map used here (104×40) — `View.js`'s water plane was
+very likely only ever exercised against the square maps the game
+normally uses (64/128/192). Cosmetic, not a correctness issue for the
+vehicle/multi-city proof itself, but a real finding for whoever tackles a
+non-hacky multi-city region view later.
+
 ## What's still open
 
 - Shoreline blending — see round 2 above. Not a matter of more guessing;
   needs either the texture-readback approach or a non-software-rendered
   environment to finish verifying.
-- Porting the multi-instance vehicle / multi-city work from
-  `dev_engine_region_3d.html` into `View.js`'s actual scene, camera, and
-  Hub UI (still a standalone page today) — and building real vehicle
-  geometry (the box placeholder proved the mechanism, not the art).
+- The water-plane sizing quirk on non-square maps noted above.
+- A real multi-city architecture in `View.js` itself (this pass used a
+  combined-tilesData trick specifically to avoid refactoring `View.js`;
+  a genuine region view with independently-sized, independently-loaded
+  cities would need real changes there).
+- Real vehicle geometry (the box placeholder proved the mechanism, not
+  the art) and wiring this into `View.js`'s actual camera/controls/Hub UI
+  rather than a standalone preview page.
 - Eventually: replacing `CityGame.js` as the Worker's actual entry point
   and repointing `utils/rollup.config.city.js`, once the above make that
   safe to do without regressing the shipping game.
