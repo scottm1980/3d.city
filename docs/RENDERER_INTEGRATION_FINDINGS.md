@@ -473,6 +473,63 @@ dev previews, with no extra wiring needed. What's still missing is Hub's
 actual DOM UI chrome (tool palette, menus) and a first-class multi-city
 region view, not camera control itself.
 
+## Real player interaction: the real Hub UI driving src/engine, not CityGame.js
+
+`dev_engine_view3d_vehicles.html` was, until now, a replay — the player
+could look and orbit the camera, but every facility came from the
+simulation's own scripted growth. Closed that gap for real: the actual
+game UI now drives actual player zoning through `src/engine`.
+
+- `AppState.hub.initGameHub()` constructs the shipping game's real
+  `Hub_Top`/`Hub_Build` DOM UI (`src/city3d/hub/`, MIT code) — the same
+  BUILD/SERVICE tool palette, population/money/score/happiness panels,
+  and top menu bar the real game uses. No synthetic UI built for this;
+  it's the genuine article, unmodified.
+- `AppState.main` — previously two no-op stubs — now implements
+  `selectTool(id)` (forwards to `view3d.selectTool`, matching what
+  `Hub_Build`'s buttons already call) and `mapClick(toolName)`
+  (`handlePlayerMapClick`): reads `view3d.raypos` (View.js's own,
+  already-proven raycasting), maps world coordinates into Steeltown's
+  local lot space, and — only for `residential`/`commercial`/
+  `industrial`, the three zone types `src/engine` actually models —
+  calls `orchestrator.zoningTool.zone(...)`. Every other real tool
+  (road, power, services, ...) is accepted by the genuine UI without
+  crashing but intentionally no-ops, since the engine doesn't model
+  them yet; that's a scope boundary, not a bug.
+- Only Steeltown (the `MANAGED` city) accepts player zoning — clicking
+  in Ironhaven (`AUTOMATED`) is rejected with an explicit status
+  message, matching the round-2 control-mode decision that automated
+  cities grow via `TownCharterTool`, not direct player input.
+- `syncNewBuildings()` replaces the old one-shot `placeBuildings()` and
+  the ad-hoc single-lot re-check this file used to have: every tick (and
+  once at startup) it renders any facility that exists in the engine but
+  hasn't been drawn yet, tracked via a `renderedFacilityIds` set so it's
+  idempotent. This covers all three ways a facility can now appear —
+  pre-seeded resource lots, `RegionOrchestrator`'s own automated growth,
+  and direct player clicks — with one mechanism instead of three, and
+  incidentally deleted a redundant manual resolve-check that duplicated
+  what `orchestrator.tick()`'s own `zoningTool.reattempt()` sweep already
+  does for every control mode.
+- Because `view3d.build()` reads `view3d.currentTool` as an implicit
+  argument, `syncNewBuildings()` restores the player's actually-selected
+  tool afterward (tracked in `currentPlayerToolId`) so a mid-drag
+  simulation tick can't silently swap the player's active tool out from
+  under them.
+
+Verified via Playwright, driving the exact same entry points a real
+click does (`AppState.main.selectTool`/`.mapClick`), with `raypos` set
+directly to isolate this change from the already-proven raycasting math:
+zero JS/console errors; a genuinely clear lot (found via the same
+`footprintTiles()` check `zoningTool.zone()` itself uses, not guessed)
+went from undeveloped to a resolved `housing` facility in one click,
+`millCity.facilities.size` and `view3d.buildingLists`' real entry count
+each increased by exactly 1 (engine state and the actual rendered scene
+agree); a second click on the now-developed lot correctly changed
+neither; and a click inside Ironhaven was correctly rejected with the
+expected status message. A screenshot confirms the real BUILD panel,
+top bar, and population/money/score/happiness readouts are genuinely
+present and rendered, not just constructed in the DOM.
+
 ## What's still open
 
 - Shoreline blending — see round 2 above. Not a matter of more guessing;
@@ -482,8 +539,9 @@ region view, not camera control itself.
   combined-tilesData trick specifically to avoid refactoring `View.js`;
   a genuine region view with independently-sized, independently-loaded
   cities would need real changes there).
-- Hub's DOM UI chrome (tool palette, build menus) around the preview —
-  camera control itself is already real, per above.
+- Only 3 of the real UI's ~13 tools (R/C/I) are wired to `src/engine`;
+  road/power/service tools are accepted but no-op, since the engine
+  doesn't model infrastructure/services yet.
 - Eventually: replacing `CityGame.js` as the Worker's actual entry point
   and repointing `utils/rollup.config.city.js`, once the above make that
   safe to do without regressing the shipping game.

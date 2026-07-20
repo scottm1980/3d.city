@@ -9,6 +9,7 @@
 </head>
 <style>
 #status { position:absolute; left:10px; top:10px; z-index:10; font:12px monospace; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; max-width:90%; }
+#instructions { position:absolute; left:10px; top:56px; z-index:10; font:12px sans-serif; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; max-width:360px; }
 </style>
 <script type="module">
 	// Seventh dev preview: ports the multi-city/vehicle work proven in
@@ -57,11 +58,13 @@
 	const TILE_GROUND = 0;
 	const TILE_TREE_BASE = 21;
 	const TOOL_ID = { [ZoneType.RESIDENTIAL]: 1, [ZoneType.COMMERCIAL]: 2, [ZoneType.INDUSTRIAL]: 3 };
+	const ZONE_TYPE_FOR_TOOL_NAME = { residential: ZoneType.RESIDENTIAL, commercial: ZoneType.COMMERCIAL, industrial: ZoneType.INDUSTRIAL };
 
 	const CITY_SIZE = 40;
 	const GAP = 24;
 	const COMBINED_W = CITY_SIZE * 2 + GAP;
 	const COMBINED_H = CITY_SIZE;
+	const MILL_OFFSET_X = CITY_SIZE + GAP;
 
 	function status ( s ) { document.getElementById( 'status' ).textContent = s; }
 	function treeVariant ( x, y ) { return TILE_TREE_BASE + ( ( x * 7 + y * 13 ) % 8 ); }
@@ -174,18 +177,84 @@
 
 	}
 
-	function placeBuildings ( city, offsetX ) {
+	// Renders every developed-but-not-yet-rendered facility (in either
+	// city) as a real view3d.build() call. Runs at startup and again every
+	// tick, so it covers all three ways a facility can come into being:
+	// the pre-seeded resource lots, RegionOrchestrator's own growth
+	// (automated TownCharterTool, or a managed city's zoningTool.reattempt
+	// picking up a lot whose inputs just arrived), and now direct player
+	// clicks via handlePlayerMapClick(). renderedFacilityIds makes this
+	// idempotent instead of re-building the same lot every tick.
+	const renderedFacilityIds = new Set();
+
+	function syncNewBuildings () {
 
 		let count = 0;
-		for ( const lot of city.lots ) {
-			if ( ! lot.isDeveloped || lot.facility === null ) continue; // only anchor lots
-			const toolId = TOOL_ID[ lot.zoneType ];
-			if ( toolId === undefined ) continue;
-			AppState.view3d.selectTool( toolId );
-			AppState.view3d.build( lot.x + offsetX, lot.y );
-			count ++;
+
+		for ( const [ city, offsetX ] of [ [ mineCity, 0 ], [ millCity, MILL_OFFSET_X ] ] ) {
+
+			for ( const lot of city.lots ) {
+
+				if ( lot.facility === null || renderedFacilityIds.has( lot.facility.id ) ) continue; // only unrendered anchor lots
+				const toolId = TOOL_ID[ lot.zoneType ];
+				if ( toolId === undefined ) continue;
+
+				AppState.view3d.selectTool( toolId );
+				AppState.view3d.build( lot.x + offsetX, lot.y );
+				renderedFacilityIds.add( lot.facility.id );
+				count ++;
+
+			}
+
 		}
+
+		// Building uses view3d.currentTool as an implicit argument
+		// (view3d.build() reads it), so syncing while the player has a
+		// tool selected must not leave a different tool active afterward -
+		// restore whatever the player last picked via the real Hub UI.
+		if ( count > 0 ) AppState.view3d.selectTool( currentPlayerToolId );
+
 		return count;
+
+	}
+
+	// --- Player interaction: the real Hub_Build toolbar + View.js's own
+	// raycasting, driving src/engine's ZoningTool instead of CityGame.js.
+	// Only Steeltown (the MANAGED city) accepts direct zoning - Ironhaven
+	// is AUTOMATED and grows on its own via TownCharterTool, per the
+	// round-2 control-mode decision src/engine/README.md documents. Tools
+	// the engine doesn't model yet (road, power, services...) are
+	// accepted by the real UI but intentionally no-op rather than crash.
+
+	let currentPlayerToolId = 0;
+	let playerActionStatus = '';
+
+	function handlePlayerSelectTool ( id ) {
+
+		currentPlayerToolId = id;
+		AppState.view3d.selectTool( id );
+
+	}
+
+	function handlePlayerMapClick ( toolName ) {
+
+		const zoneType = ZONE_TYPE_FOR_TOOL_NAME[ toolName ];
+		if ( ! zoneType ) { playerActionStatus = `"${ toolName }" isn't modeled by src/engine yet - try Residential/Commercial/Industrial`; return; }
+
+		const lx = AppState.view3d.raypos.x - MILL_OFFSET_X, ly = AppState.view3d.raypos.z;
+
+		if ( lx < 0 || lx >= CITY_SIZE || ly < 0 || ly >= CITY_SIZE ) { playerActionStatus = 'that tile is outside Steeltown (the managed city) - Ironhaven grows automatically'; return; }
+
+		const lot = millCity.lotAt( lx, ly );
+		if ( ! lot || lot.terrain === TerrainType.WATER ) { playerActionStatus = 'cannot zone water'; return; }
+		if ( lot.isDeveloped ) { playerActionStatus = 'lot already developed'; return; }
+
+		const facility = orchestrator.zoningTool.zone( millCity, lot, zoneType, availableResourceIds( region ) );
+		playerActionStatus = facility
+			? `zoned (${ toolName }) and resolved immediately as ${ facility.archetypeId }`
+			: `zoned (${ toolName }) - waiting on resources to resolve`;
+
+		syncNewBuildings();
 
 	}
 
@@ -308,11 +377,12 @@
 	function tickSimulation () {
 
 		orchestrator.tick();
-
-		if ( millLot && millLot.facility === null ) {
-			const recipe = resolver.resolve( millCity, millLot, availableResourceIds( region ) );
-			if ( recipe ) developLot( millCity, millLot, recipe );
-		}
+		// orchestrator.tick() already sweeps every city - including
+		// Steeltown via zoningTool.reattempt() - so a lot zoned but not
+		// immediately resolved (the pre-seeded millLot, or a player's
+		// click) picks up automatically once its inputs arrive; no
+		// separate manual re-check needed here.
+		const builtThisTick = syncNewBuildings();
 
 		const { rendered, byVariant } = updateVehicleInstances();
 
@@ -327,12 +397,14 @@
 			shipmentsDelivered: all.filter( s => s.state === ShipmentState.DELIVERED ).length,
 			renderedVehicleInstances: rendered,
 			renderedByVariant: byVariant,
+			builtThisTick,
+			playerActionStatus,
 		};
 		document.getElementById( 'status' ).textContent = JSON.stringify( summary );
 		window.__engineView3DVehiclesReady = summary;
 		// Exposed for automated verification of the actual instance
 		// buffers against real engine state, not just a summary count.
-		window.__engineView3DVehiclesDebug = { region, mineCity, millCity, vehicleMeshes, cargoRegistry, CITY_SIZE, GAP };
+		window.__engineView3DVehiclesDebug = { region, mineCity, millCity, vehicleMeshes, cargoRegistry, orchestrator, CITY_SIZE, GAP, MILL_OFFSET_X };
 
 	}
 
@@ -357,7 +429,18 @@
 			status( 'constructing real View/Hub (no Worker, no CityGame.js)...' );
 			AppState.hub = new Hub();
 			AppState.view3d = new View();
-			AppState.main = { start () {}, sendTool () {} };
+			// The real click/tool-select pipeline (View.js's rayTest() ->
+			// AppState.main.mapClick(), Hub_Build's toolbar -> .selectTool())
+			// normally forwards to CityGame.js through a Worker message.
+			// Routed here into src/engine's ZoningTool instead - the whole
+			// point of this preview being interactive rather than a replay.
+			AppState.main = {
+				start () {},
+				sendTool () {},
+				setSpeed () {},
+				selectTool: handlePlayerSelectTool,
+				mapClick: handlePlayerMapClick,
+			};
 
 			status( 'initRenderer()...' );
 			await AppState.view3d.initRenderer();
@@ -367,10 +450,12 @@
 			AppState.view3d.paintMap( [ COMBINED_W, COMBINED_H ], false );
 			AppState.view3d.clearIntro();
 			AppState.hub.start();
+			// The real BUILD/SERVICE tool palette (src/city3d/hub/Hub_Build.js,
+			// MIT), same DOM UI the shipping game uses - not a synthetic one.
+			AppState.hub.initGameHub();
 
 			status( 'placing real buildings in both cities...' );
-			const mineBuilt = placeBuildings( mineCity, 0 );
-			const millBuilt = placeBuildings( millCity, CITY_SIZE + GAP );
+			const built = syncNewBuildings();
 
 			status( 'adding real per-variant InstancedMesh vehicle layers to view3d.scene...' );
 			cargoRegistry = createDefaultCargoVisualRegistry();
@@ -381,7 +466,7 @@
 			AppState.view3d.cam.distance = 140;
 			AppState.view3d.moveCamera();
 
-			status( `running simulation ticks (mine built ${mineBuilt}, mill built ${millBuilt})...` );
+			status( `running simulation ticks (${built} facilities built)...` );
 			setInterval( tickSimulation, 200 );
 			tickSimulation();
 
@@ -402,5 +487,6 @@
 <div id="container"></div>
 <div id="hub"></div>
 <div id="status">starting...</div>
+<div id="instructions">Ironhaven (left city) grows on its own - AUTOMATED. Steeltown (right city) is MANAGED: pick Residential/Commercial/Industrial from the real BUILD panel below, then click a tile in Steeltown to zone it through src/engine's ZoningTool. Other tools (road, power, ...) are accepted by the real UI but aren't modeled yet, so they no-op.</div>
 
 </body></html>
