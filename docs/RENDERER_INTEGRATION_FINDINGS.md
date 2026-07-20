@@ -422,6 +422,57 @@ two ways:
   depth:40`, matching `mapSize=[104,40]` precisely — previously it was
   oversized/misaligned along one axis.
 
+## Real vehicle geometry per ModelVariant, replacing the tinted-box placeholder
+
+`dev_engine_view3d_vehicles.html`'s vehicle layer previously shared one
+`BoxGeometry` `InstancedMesh` across every commodity, differing only by
+per-instance tint — proving the InstancedMesh mechanism, not the actual
+visual gap Tier 6's `ModelVariant` set (`HOPPER`/`TANKER`/`FLATBED`/
+`REFRIGERATED`/`VAN`/`TRANSIT`) was designed to close. Closed that gap:
+one `InstancedMesh` per variant now, each with a genuinely distinct
+primitive silhouette (a tapered hexagonal `CylinderGeometry` for hopper
+cars, a horizontal cylinder for tankers, low/boxy/compact `BoxGeometry`
+variants for flatbed/refrigerated/van/transit) — simple Three.js
+primitives, not ripped assets, so no licensing question. All six share
+one `MeshStandardMaterial` (vertex-colored) so per-instance tinting still
+works exactly as before; only geometry now varies per variant instead of
+being uniform. Vehicles also now face their direction of travel
+(`dummy.rotation.y` from the segment's direction), a small but real
+correctness improvement over the previous unrotated boxes.
+
+Per-variant instance budgets replace the old single shared cap (40 each
+instead of one pool of 200), and each mesh's unused instances are hidden
+the same zero-scale-matrix way as before, now tracked per mesh instead of
+globally.
+
+Verified past "it renders" into per-mesh, per-instance correctness: all
+six `InstancedMesh` objects confirmed live in `view3d.scene`
+(`mesh.parent !== null`) with the intended distinct geometry
+(`CylinderGeometry` for hopper/tanker, `BoxGeometry` with the intended
+per-variant vertex counts for the rest). A full (not sampled) sweep of
+every instance's raw `instanceMatrix.array` per mesh confirmed the
+"visible" count (non-zero-scale entries) exactly matches the
+`renderedByVariant` bookkeeping the simulation itself reports for every
+variant, including the zero-count variants (tanker/refrigerated/van
+weren't produced by this particular mine/mill scenario, and correctly
+rendered zero instances rather than stale leftovers) — in one sampled
+run: 9 hopper (iron ore + coal), 12 flatbed (steel), 7 transit (labor
+commuting between the two cities, an emergent cross-city flow this
+scenario didn't explicitly script), 28 total, zero JS/console errors.
+
+## Camera controls: already real, not a gap
+
+While scoping the vehicle-geometry work, confirmed the "Hub UI/camera
+integration" item previously listed as open is largely already solved
+for free: `View.js`'s own `initRenderer()` (called by every `View.js`-
+driving preview already) registers real mouse/touch/wheel event
+listeners and starts `renderer.setAnimationLoop(animate)`, which calls
+`updateCamera()` every frame — the exact same orbit/pan/zoom/momentum
+camera the shipping game uses is already live and interactive in these
+dev previews, with no extra wiring needed. What's still missing is Hub's
+actual DOM UI chrome (tool palette, menus) and a first-class multi-city
+region view, not camera control itself.
+
 ## What's still open
 
 - Shoreline blending — see round 2 above. Not a matter of more guessing;
@@ -431,9 +482,8 @@ two ways:
   combined-tilesData trick specifically to avoid refactoring `View.js`;
   a genuine region view with independently-sized, independently-loaded
   cities would need real changes there).
-- Real vehicle geometry (the box placeholder proved the mechanism, not
-  the art) and wiring this into `View.js`'s actual camera/controls/Hub UI
-  rather than a standalone preview page.
+- Hub's DOM UI chrome (tool palette, build menus) around the preview —
+  camera control itself is already real, per above.
 - Eventually: replacing `CityGame.js` as the Worker's actual entry point
   and repointing `utils/rollup.config.city.js`, once the above make that
   safe to do without regressing the shipping game.

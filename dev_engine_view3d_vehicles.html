@@ -50,7 +50,7 @@
 	import { RegionOrchestrator } from './src/engine/orchestrator/RegionOrchestrator.js';
 	import { availableResourceIds } from './src/engine/trade/TradeResolver.js';
 	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
-	import { visualForShipment } from './src/engine/visuals/CargoVisual.js';
+	import { visualForShipment, ModelVariant } from './src/engine/visuals/CargoVisual.js';
 	import { ShipmentState } from './src/engine/trade/Shipment.js';
 
 	const TILE_WATER = 2;
@@ -62,7 +62,6 @@
 	const GAP = 24;
 	const COMBINED_W = CITY_SIZE * 2 + GAP;
 	const COMBINED_H = CITY_SIZE;
-	const MAX_VEHICLE_INSTANCES = 200;
 
 	function status ( s ) { document.getElementById( 'status' ).textContent = s; }
 	function treeVariant ( x, y ) { return TILE_TREE_BASE + ( ( x * 7 + y * 13 ) % 8 ); }
@@ -190,10 +189,58 @@
 
 	}
 
-	// --- Vehicle layer: real InstancedMesh in the real scene, same
-	// technique as dev_engine_region_3d.html ---
+	// --- Vehicle layer: real InstancedMesh in the real scene, one mesh per
+	// ModelVariant instead of a single shared box. A tinted box proved the
+	// InstancedMesh mechanism; this proves the actual visual gap it left
+	// open - HOPPER/TANKER/FLATBED/REFRIGERATED/VAN/TRANSIT cargo now has a
+	// genuinely different silhouette, not just a different color, matching
+	// what Tier 6's README always meant by "model variant" but the first
+	// port didn't yet render. Geometry is simple primitives (no ripped
+	// assets, nothing GPL-adjacent) chosen to read distinctly at a glance:
+	// a tapered hexagonal hopper car, a horizontal tanker cylinder, a low
+	// flatbed, a boxy refrigerated container, a compact van, and a longer
+	// transit bus shape.
 
-	let vehicleMesh, cargoRegistry, region, mineCity, millCity, orchestrator, resolver;
+	const VEHICLE_CAPACITY_PER_VARIANT = 40;
+
+	function buildVehicleGeometry ( variant ) {
+
+		switch ( variant ) {
+
+			case ModelVariant.HOPPER: return new THREE.CylinderGeometry( 0.6, 0.35, 1.0, 6 );
+			case ModelVariant.TANKER: return new THREE.CylinderGeometry( 0.45, 0.45, 1.6, 12 ).rotateZ( Math.PI / 2 );
+			case ModelVariant.FLATBED: return new THREE.BoxGeometry( 1.8, 0.35, 0.9 );
+			case ModelVariant.REFRIGERATED: return new THREE.BoxGeometry( 1.3, 1.05, 0.9 );
+			case ModelVariant.VAN: return new THREE.BoxGeometry( 0.95, 0.85, 0.8 );
+			case ModelVariant.TRANSIT: return new THREE.BoxGeometry( 1.6, 0.95, 0.85 );
+			default: return new THREE.BoxGeometry( 1.2, 1.2, 1.2 ); // unknown future variant - still renders
+
+		}
+
+	}
+
+	// One InstancedMesh per variant (all sharing one vertex-colored
+	// material) rather than one mesh per resource, so cargo sharing a
+	// variant still batches - the same GPU-instancing rationale
+	// CargoVisual.js documents, just now expressed as real geometry too.
+	function buildVehicleMeshes () {
+
+		const material = new THREE.MeshStandardMaterial( { vertexColors: true } );
+		const meshes = new Map();
+
+		for ( const variant of Object.values( ModelVariant ) ) {
+
+			const mesh = new THREE.InstancedMesh( buildVehicleGeometry( variant ), material, VEHICLE_CAPACITY_PER_VARIANT );
+			AppState.view3d.scene.add( mesh );
+			meshes.set( variant, mesh );
+
+		}
+
+		return meshes;
+
+	}
+
+	let vehicleMeshes, cargoRegistry, region, mineCity, millCity, orchestrator, resolver;
 	let millLot = null; // set once a clear spot is found, after fillCity runs
 	const dummy = new THREE.Object3D();
 	const hiddenMatrix = new THREE.Matrix4().makeScale( 0, 0, 0 );
@@ -207,12 +254,19 @@
 		const mineAnchor = worldAnchor( mineCity, 0 );
 		const millAnchor = worldAnchor( millCity, CITY_SIZE + GAP );
 
-		let i = 0;
+		const used = new Map();
+		for ( const variant of vehicleMeshes.keys() ) used.set( variant, 0 );
+
 		for ( const shipment of region.shipments.values() ) {
 
-			if ( i >= MAX_VEHICLE_INSTANCES ) break;
 			if ( shipment.state !== ShipmentState.IN_TRANSIT ) continue;
 			if ( shipment.path.length === 0 ) continue; // intra-city moves aren't spatial here
+
+			const visual = visualForShipment( shipment, cargoRegistry, region.resources );
+			const variant = visual ? visual.modelVariant : ModelVariant.FLATBED;
+			const mesh = vehicleMeshes.get( variant );
+			const i = used.get( variant );
+			if ( ! mesh || i >= VEHICLE_CAPACITY_PER_VARIANT ) continue; // over this variant's per-mesh budget - still simulated, just not rendered
 
 			// Only one corridor exists (mine <-> mill), so progress maps
 			// directly onto the mine-anchor -> mill-anchor segment; a
@@ -224,23 +278,30 @@
 			const t = shipment.progress;
 
 			dummy.position.set( a.x + ( b.x - a.x ) * t, 1, a.z + ( b.z - a.z ) * t );
+			dummy.rotation.y = Math.atan2( b.x - a.x, b.z - a.z ); // face direction of travel
 			dummy.scale.set( 1, 1, 1 );
 			dummy.updateMatrix();
-			vehicleMesh.setMatrixAt( i, dummy.matrix );
+			mesh.setMatrixAt( i, dummy.matrix );
+			mesh.setColorAt( i, visual ? hexToThreeColor( visual.tint ) : new THREE.Color( 0xffffff ) );
 
-			const visual = visualForShipment( shipment, cargoRegistry, region.resources );
-			vehicleMesh.setColorAt( i, visual ? hexToThreeColor( visual.tint ) : new THREE.Color( 0xffffff ) );
-
-			i ++;
+			used.set( variant, i + 1 );
 
 		}
 
-		for ( let j = i; j < MAX_VEHICLE_INSTANCES; j ++ ) vehicleMesh.setMatrixAt( j, hiddenMatrix );
+		let rendered = 0;
+		const byVariant = {};
+		for ( const [ variant, mesh ] of vehicleMeshes ) {
 
-		vehicleMesh.instanceMatrix.needsUpdate = true;
-		if ( vehicleMesh.instanceColor ) vehicleMesh.instanceColor.needsUpdate = true;
+			const count = used.get( variant );
+			for ( let j = count; j < VEHICLE_CAPACITY_PER_VARIANT; j ++ ) mesh.setMatrixAt( j, hiddenMatrix );
+			mesh.instanceMatrix.needsUpdate = true;
+			if ( mesh.instanceColor ) mesh.instanceColor.needsUpdate = true;
+			byVariant[ variant ] = count;
+			rendered += count;
 
-		return i;
+		}
+
+		return { rendered, byVariant };
 
 	}
 
@@ -253,7 +314,7 @@
 			if ( recipe ) developLot( millCity, millLot, recipe );
 		}
 
-		const rendered = updateVehicleInstances();
+		const { rendered, byVariant } = updateVehicleInstances();
 
 		const all = Array.from( region.shipments.values() );
 		const summary = {
@@ -265,12 +326,13 @@
 			shipmentsInTransit: all.filter( s => s.state === ShipmentState.IN_TRANSIT ).length,
 			shipmentsDelivered: all.filter( s => s.state === ShipmentState.DELIVERED ).length,
 			renderedVehicleInstances: rendered,
+			renderedByVariant: byVariant,
 		};
 		document.getElementById( 'status' ).textContent = JSON.stringify( summary );
 		window.__engineView3DVehiclesReady = summary;
 		// Exposed for automated verification of the actual instance
 		// buffers against real engine state, not just a summary count.
-		window.__engineView3DVehiclesDebug = { region, mineCity, millCity, vehicleMesh, cargoRegistry, CITY_SIZE, GAP };
+		window.__engineView3DVehiclesDebug = { region, mineCity, millCity, vehicleMeshes, cargoRegistry, CITY_SIZE, GAP };
 
 	}
 
@@ -310,12 +372,9 @@
 			const mineBuilt = placeBuildings( mineCity, 0 );
 			const millBuilt = placeBuildings( millCity, CITY_SIZE + GAP );
 
-			status( 'adding real InstancedMesh vehicle layer to view3d.scene...' );
+			status( 'adding real per-variant InstancedMesh vehicle layers to view3d.scene...' );
 			cargoRegistry = createDefaultCargoVisualRegistry();
-			const vehicleGeometry = new THREE.BoxGeometry( 1.2, 1.2, 1.2 );
-			const vehicleMaterial = new THREE.MeshStandardMaterial( { vertexColors: true } );
-			vehicleMesh = new THREE.InstancedMesh( vehicleGeometry, vehicleMaterial, MAX_VEHICLE_INSTANCES );
-			AppState.view3d.scene.add( vehicleMesh );
+			vehicleMeshes = buildVehicleMeshes();
 
 			AppState.view3d.center.x = COMBINED_W / 2;
 			AppState.view3d.center.z = COMBINED_H / 2;
