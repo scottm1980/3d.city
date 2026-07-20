@@ -75,15 +75,34 @@ gitignored local build artifact absent from a fresh checkout — it would
 404 the same way `dev_engine_mapgen.html` initially did before that
 dependency was dropped in favor of plain HTML controls.)
 
+## What's also done: `dev_engine_city.html`
+
+Extends the terrain-only proof to the full single-city loop: generation →
+zoning → facility resolution → trade production, all from `src/engine`. The
+city is `AUTOMATED` and driven by `RegionOrchestrator` (the same mechanism
+already verified in the Tier 7 capstone test), so this page proves that
+pipeline is real and visible, not just something a Node script asserted.
+Developed lots are colored by their facility's primary output resource,
+reusing Tier 6's `CargoVisualRegistry` tints rather than a separate palette.
+
+Verified via Playwright: zero JS errors, real growth (430 facilities across
+6 archetypes, ~2,300 shipments delivered on a default 60-tick run), and —
+more rigorously than a screenshot — exact pixel-level verification that
+facility color blending matches the expected math by hand (a sawmill lot's
+rendered `[196,150,93]` is precisely an 80% blend of desert terrain toward
+lumber's tint `0xc08a52`). Confirms the resolution → recipe → cargo-visual
+→ pixel chain is wired correctly end to end, not just plausible-looking.
+
 ## What's still open
 
-- Zoning/facility rendering for a single city (extending this preview, or
-  a real `View.js` integration path, once a tile-encoding decision is made
-  that doesn't require replicating the GPL numeric ID table exactly).
 - The multi-instance vehicle rendering the sprite system currently can't
   do — a prerequisite for shipments ever being visible as multiple trucks.
 - A multi-city/region view — new UI and camera work, not present in any
   form today.
+- A real `View.js`/Three.js integration path (these dev previews use a
+  flat 2D canvas, not the actual 3D renderer) — needs a tile-encoding
+  decision that doesn't require replicating the GPL numeric ID table
+  exactly.
 - Eventually: replacing `CityGame.js` as the Worker's actual entry point
   and repointing `utils/rollup.config.city.js`, once the above make that
   safe to do without regressing the shipping game.
