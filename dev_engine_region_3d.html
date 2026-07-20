@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine region 3d preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+</head>
+<style>
+*{ padding:0; margin: 0; }
+html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px sans-serif; overflow:hidden; }
+canvas { display:block; }
+</style>
+<script type="module">
+	// Fourth dev preview, and the first to use the project's real Three.js
+	// vendor code (src/three, src/jsm) instead of a flat 2D canvas -
+	// proving the multi-city + many-concurrent-vehicle result from
+	// dev_engine_region.html actually holds up as real 3D geometry, before
+	// ever touching CityGame.js/WorkerBridge.js/View.js. Still zero
+	// involvement from GPL src/micro or the real game's render path.
+	//
+	// The key technical question this answers: can a single InstancedMesh
+	// represent hundreds of independently-positioned, independently-
+	// colored, independently-moving shipments at once? That's the actual
+	// fix for the real sprite system's one-instance-per-type limitation
+	// flagged in RENDERER_INTEGRATION_FINDINGS.md - not a new rendering
+	// concept, just proving the mechanism before porting it for real.
+	import * as THREE from './src/three/three.module.js';
+	import { OrbitControls } from './src/jsm/controls/OrbitControls.js';
+
+	import { RegionState } from './src/engine/world/RegionState.js';
+	import { RegionMapGenerator } from './src/engine/worldgen/RegionMapGenerator.js';
+	import { RegionOrchestrator } from './src/engine/orchestrator/RegionOrchestrator.js';
+	import { DefaultResourceTypes } from './src/engine/worldgen/DefaultResources.js';
+	import { DefaultRecipes, DefaultProcessedResourceTypes } from './src/engine/resolution/DefaultRecipes.js';
+	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
+	import { visualForShipment } from './src/engine/visuals/CargoVisual.js';
+	import { ShipmentState } from './src/engine/trade/Shipment.js';
+	import { ControlMode } from './src/engine/world/CityState.js';
+
+	const MAX_INSTANCES = 800;
+	const REGION_SIZE = 200;
+	const TICK_INTERVAL_MS = 150;
+
+	let region, orchestrator, cargoRegistry;
+	let scene, camera, renderer, controls;
+	let vehicleMesh, cityGroup, corridorLines;
+	let tickCount = 0;
+	let renderedInstancesLastFrame = 0;
+
+	function hexToThreeColor ( hex ) {
+		return new THREE.Color( ( ( hex >> 16 ) & 255 ) / 255, ( ( hex >> 8 ) & 255 ) / 255, ( hex & 255 ) / 255 );
+	}
+
+	function toWorld ( regionPos ) {
+		return { x: regionPos.x - REGION_SIZE / 2, z: regionPos.y - REGION_SIZE / 2 };
+	}
+
+	function initThree () {
+
+		scene = new THREE.Scene();
+		scene.background = new THREE.Color( 0x0d0f14 );
+
+		camera = new THREE.PerspectiveCamera( 55, window.innerWidth / window.innerHeight, 0.1, 2000 );
+		camera.position.set( 0, 180, 180 );
+
+		renderer = new THREE.WebGLRenderer( { antialias: true } );
+		renderer.setSize( window.innerWidth, window.innerHeight );
+		document.body.appendChild( renderer.domElement );
+
+		controls = new OrbitControls( camera, renderer.domElement );
+		controls.target.set( 0, 0, 0 );
+
+		scene.add( new THREE.AmbientLight( 0xffffff, 0.6 ) );
+		const sun = new THREE.DirectionalLight( 0xffffff, 0.8 );
+		sun.position.set( 100, 200, 100 );
+		scene.add( sun );
+
+		const ground = new THREE.Mesh(
+			new THREE.PlaneGeometry( REGION_SIZE * 1.4, REGION_SIZE * 1.4 ),
+			new THREE.MeshStandardMaterial( { color: 0x1a1e26 } ),
+		);
+		ground.rotation.x = -Math.PI / 2;
+		scene.add( ground );
+
+		const vehicleGeometry = new THREE.BoxGeometry( 1.4, 1.4, 1.4 );
+		const vehicleMaterial = new THREE.MeshStandardMaterial( { vertexColors: true } );
+		vehicleMesh = new THREE.InstancedMesh( vehicleGeometry, vehicleMaterial, MAX_INSTANCES );
+		// instanceColor is lazily created by the first setColorAt() call.
+		scene.add( vehicleMesh );
+
+		cityGroup = new THREE.Group();
+		scene.add( cityGroup );
+
+		corridorLines = new THREE.Group();
+		scene.add( corridorLines );
+
+		window.addEventListener( 'resize', () => {
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+			renderer.setSize( window.innerWidth, window.innerHeight );
+		} );
+
+	}
+
+	function build () {
+
+		region = new RegionState( 'preview-region', 'Preview Region' );
+		for ( const rt of DefaultResourceTypes ) region.resources.register( rt );
+		for ( const rt of DefaultProcessedResourceTypes ) region.resources.register( rt );
+		for ( const recipe of DefaultRecipes ) region.recipes.register( recipe );
+
+		new RegionMapGenerator( 1, {
+			nodeCount: 6,
+			width: REGION_SIZE,
+			height: REGION_SIZE,
+			minSpacing: 40,
+			citySize: { width: 24, height: 24 },
+		} ).generate( region );
+
+		orchestrator = new RegionOrchestrator( region, { seed: 1, automatedTickInterval: 2, maxLotsPerAutomatedTick: 4 } );
+		cargoRegistry = createDefaultCargoVisualRegistry();
+		tickCount = 0;
+
+		buildCityMeshes();
+
+	}
+
+	function buildCityMeshes () {
+
+		cityGroup.clear();
+		corridorLines.clear();
+
+		for ( const city of region.cities.values() ) {
+
+			const pos = toWorld( city.regionPosition );
+			const radius = 2 + Math.min( 8, city.facilities.size / 15 );
+
+			const mesh = new THREE.Mesh(
+				new THREE.SphereGeometry( radius, 16, 12 ),
+				new THREE.MeshStandardMaterial( { color: city.controlMode === ControlMode.MANAGED ? 0x4a9edd : 0x84dd4a } ),
+			);
+			mesh.position.set( pos.x, radius, pos.z );
+			mesh.userData.cityId = city.id;
+			cityGroup.add( mesh );
+
+		}
+
+		for ( const corridor of region.corridors.values() ) {
+
+			const a = toWorld( region.cities.get( corridor.cityAId ).regionPosition );
+			const b = toWorld( region.cities.get( corridor.cityBId ).regionPosition );
+
+			const geometry = new THREE.BufferGeometry().setFromPoints( [
+				new THREE.Vector3( a.x, 0.2, a.z ),
+				new THREE.Vector3( b.x, 0.2, b.z ),
+			] );
+			const line = new THREE.Line( geometry, new THREE.LineBasicMaterial( { color: 0x3a4658 } ) );
+			line.userData.corridorId = corridor.id;
+			corridorLines.add( line );
+
+		}
+
+	}
+
+	function updateCorridorColors () {
+
+		for ( const line of corridorLines.children ) {
+
+			const corridor = region.corridors.get( line.userData.corridorId );
+			const utilization = corridor.capacity > 0 ? Math.min( 1, corridor.load / corridor.capacity ) : 0;
+			line.material.color.set( utilization > 0.7 ? 0xe05a4f : ( utilization > 0.3 ? 0xd9b44a : 0x3a4658 ) );
+
+		}
+
+	}
+
+	function cityOfFacility ( facilityId ) {
+
+		for ( const city of region.cities.values() ) {
+			if ( city.facilities.has( facilityId ) ) return city;
+		}
+		return null;
+
+	}
+
+	// Same route-walking logic as dev_engine_region.html's 2D version,
+	// just returning a 3D-space point instead of a 2D one.
+	function shipmentPosition ( shipment ) {
+
+		const originCity = cityOfFacility( shipment.originFacilityId );
+		if ( ! originCity ) return null;
+
+		if ( shipment.path.length === 0 ) return originCity.regionPosition;
+
+		let currentCity = originCity;
+		let traveled = shipment.progress * shipment.distance;
+
+		for ( let i = 0; i < shipment.path.length; i ++ ) {
+
+			const corridor = region.corridors.get( shipment.path[ i ] );
+			if ( ! corridor ) return currentCity.regionPosition;
+
+			const nextCity = region.cities.get( corridor.other( currentCity.id ) );
+			if ( ! nextCity ) return currentCity.regionPosition;
+
+			const isLastSegment = i === shipment.path.length - 1;
+
+			if ( traveled < corridor.distance || isLastSegment ) {
+
+				const t = corridor.distance === 0 ? 1 : Math.min( 1, Math.max( 0, traveled / corridor.distance ) );
+				const a = currentCity.regionPosition, b = nextCity.regionPosition;
+				return { x: a.x + ( b.x - a.x ) * t, y: a.y + ( b.y - a.y ) * t };
+
+			}
+
+			traveled -= corridor.distance;
+			currentCity = nextCity;
+
+		}
+
+		return currentCity.regionPosition;
+
+	}
+
+	const dummy = new THREE.Object3D();
+	const hiddenMatrix = new THREE.Matrix4().makeScale( 0, 0, 0 );
+
+	function updateVehicleInstances () {
+
+		let i = 0;
+
+		for ( const shipment of region.shipments.values() ) {
+
+			if ( i >= MAX_INSTANCES ) break;
+			if ( shipment.state !== ShipmentState.IN_TRANSIT ) continue;
+			if ( shipment.path.length === 0 ) continue;
+
+			const pos = shipmentPosition( shipment );
+			if ( ! pos ) continue;
+
+			const world = toWorld( pos );
+			dummy.position.set( world.x, 1, world.z );
+			dummy.scale.set( 1, 1, 1 );
+			dummy.updateMatrix();
+			vehicleMesh.setMatrixAt( i, dummy.matrix );
+
+			const visual = visualForShipment( shipment, cargoRegistry, region.resources );
+			vehicleMesh.setColorAt( i, visual ? hexToThreeColor( visual.tint ) : new THREE.Color( 0xffffff ) );
+
+			i ++;
+
+		}
+
+		renderedInstancesLastFrame = i;
+
+		for ( let j = i; j < MAX_INSTANCES; j ++ ) vehicleMesh.setMatrixAt( j, hiddenMatrix );
+
+		vehicleMesh.count = MAX_INSTANCES;
+		vehicleMesh.instanceMatrix.needsUpdate = true;
+		// instanceColor stays null until the first setColorAt() call (i.e.
+		// until at least one shipment has ever been visible this run).
+		if ( vehicleMesh.instanceColor ) vehicleMesh.instanceColor.needsUpdate = true;
+
+	}
+
+	function tickSim () {
+
+		orchestrator.tick();
+		tickCount ++;
+		updateCorridorColors();
+		updateSummary();
+
+	}
+
+	function updateSummary () {
+
+		const all = Array.from( region.shipments.values() );
+		const inTransit = all.filter( s => s.state === ShipmentState.IN_TRANSIT ).length;
+		const delivered = all.filter( s => s.state === ShipmentState.DELIVERED ).length;
+		const totalFacilities = Array.from( region.cities.values() ).reduce( ( n, c ) => n + c.facilities.size, 0 );
+
+		const summary = {
+			tick: tickCount,
+			cities: region.cities.size,
+			corridors: region.corridors.size,
+			totalFacilities,
+			shipmentsCreated: all.length,
+			shipmentsInTransit: inTransit,
+			shipmentsDelivered: delivered,
+			renderedInstancesLastFrame,
+		};
+
+		document.getElementById( 'debug' ).textContent = JSON.stringify( summary );
+		window.__engineRegion3DPreview = summary;
+
+	}
+
+	function animate () {
+
+		requestAnimationFrame( animate );
+		updateVehicleInstances();
+		controls.update();
+		renderer.render( scene, camera );
+		window.__engineRegion3DPreview = { ...( window.__engineRegion3DPreview || {} ), renderedInstancesLastFrame };
+
+	}
+
+	initThree();
+	build();
+	setInterval( tickSim, TICK_INTERVAL_MS );
+	animate();
+
+	// Exposed for automated verification of the actual instance buffers,
+	// not just a screenshot (lighting/distance make small instances hard
+	// to visually confirm, so check the underlying data directly instead).
+	window.__engineRegion3DDebug = { region, vehicleMesh, cargoRegistry, REGION_SIZE, get renderedInstancesLastFrame () { return renderedInstancesLastFrame; } };
+
+</script>
+
+<div id="debug" style="position:absolute; left:10px; bottom:10px; font:12px monospace; background:rgba(0,0,0,0.6); padding:4px 8px; max-width:90%; word-wrap:break-word; z-index:1;"></div>
+
+</body></html>
