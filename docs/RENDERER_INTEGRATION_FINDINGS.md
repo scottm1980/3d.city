@@ -389,12 +389,44 @@ normally uses (64/128/192). Cosmetic, not a correctness issue for the
 vehicle/multi-city proof itself, but a real finding for whoever tackles a
 non-hacky multi-city region view later.
 
+## Water-plane sizing quirk: fixed, a real `View.js` bug
+
+The "noted honestly" item above turned out to be a genuine latent bug in
+existing MIT `View.js` code, not a cosmetic quirk to live with. Two spots
+used `this.mapSize[0]` (map width) where `this.mapSize[1]` (map depth) was
+needed:
+
+- The water plane's `translate()` call offset its z-axis by
+  `(this.mapSize[0]*0.5)-0.5` instead of `(this.mapSize[1]*0.5)-0.5`.
+- The tree edge-height-clamping check compared `y` against
+  `this.mapSize[0]-1` instead of `this.mapSize[1]-1`.
+
+Both are invisible on every map the shipping game actually generates,
+since `width === height` there always (64/128/192) — `mapSize[0]` and
+`mapSize[1]` are numerically identical, so the bug can't produce a
+different result. It only surfaced because this integration work's
+104×40 combined two-city map is the first non-square `tilesData` shape
+`View.js` has ever been driven with.
+
+Fixed both one-line instances directly in `src/city3d/View.js`. Verified
+two ways:
+- **Zero regression on square maps**: re-ran `dev_engine_view3d.html` and
+  `dev_engine_view3d_buildings.html` after the fix and confirmed
+  byte-identical output to before it (`waterCount:222, treeCount:861,
+  groundCount:8133`; `builtCount:519, overlapCount:0`) — the fix is a
+  true no-op when width equals height, as expected.
+- **The actual fix, on the non-square map**: re-ran
+  `dev_engine_view3d_vehicles.html` and called
+  `view3d.water.geometry.computeBoundingBox()` directly on the live
+  scene object. The water plane now measures exactly `width:104,
+  depth:40`, matching `mapSize=[104,40]` precisely — previously it was
+  oversized/misaligned along one axis.
+
 ## What's still open
 
 - Shoreline blending — see round 2 above. Not a matter of more guessing;
   needs either the texture-readback approach or a non-software-rendered
   environment to finish verifying.
-- The water-plane sizing quirk on non-square maps noted above.
 - A real multi-city architecture in `View.js` itself (this pass used a
   combined-tilesData trick specifically to avoid refactoring `View.js`;
   a genuine region view with independently-sized, independently-loaded
