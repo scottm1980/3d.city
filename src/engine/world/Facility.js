@@ -11,7 +11,8 @@ export class Facility {
 
         this.id = id;
         this.archetypeId = archetypeId; // links to a Recipe.facilityArchetype
-        this.lot = lot;
+        this.lot = lot;                 // anchor lot (footprint center)
+        this.footprint = [ lot ];       // every Lot this facility occupies, anchor included - set for real by developLot()
 
         this.level = 1;
         this.status = FacilityStatus.GROWING;

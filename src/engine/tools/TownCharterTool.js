@@ -50,7 +50,7 @@ export class TownCharterTool {
 
             lot.zoneType = this._chooseZone( lot, charter, rng );
 
-            const recipe = this.resolver.resolve( lot, availableResourceIds );
+            const recipe = this.resolver.resolve( city, lot, availableResourceIds );
             if ( recipe ) developed.push( developLot( city, lot, recipe ) );
             // If it doesn't resolve yet (e.g. commercial with no labor
             // available), it stays zoned and a later reattempt - via the

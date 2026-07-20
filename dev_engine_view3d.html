@@ -113,6 +113,13 @@
 			// skips) purely so the rendered terrain is actually visible
 			// for verification, not obstructed by the intro screen.
 			AppState.view3d.clearIntro();
+			// clearIntro() only removes the 3D scene's title/border objects
+			// and the mainmenu buttons - the "Loading 3d models..." DOM
+			// overlay (Hub's this.full) is separately faded out and removed
+			// by AppState.hub.start()'s own timer, normally triggered by
+			// Main.start(). Previously left unresolved; found via reading
+			// Hub.js's start()/fadding() while researching shoreline tiles.
+			AppState.hub.start();
 
 			status( 'done' );
 			window.__engineView3DReady = {

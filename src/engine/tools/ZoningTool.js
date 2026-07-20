@@ -16,16 +16,17 @@ export class ZoningTool {
     // What zoning this lot as `zoneType` would resolve to right now,
     // without committing anything - the legibility the engine plan calls
     // for ("surface a lot's resource endowment... before the player
-    // commits"). Returns null if nothing would resolve yet. A dry run:
-    // zoneType is set, resolved, then restored, so it never mutates state
-    // the caller didn't ask to change.
-    preview ( lot, zoneType, availableResourceIds ) {
+    // commits"). Returns null if nothing would resolve yet (including if
+    // the required footprint doesn't have clearance). A dry run: zoneType
+    // is set, resolved, then restored, so it never mutates state the
+    // caller didn't ask to change.
+    preview ( city, lot, zoneType, availableResourceIds ) {
 
         if ( lot.isDeveloped ) return null;
 
         const previousZone = lot.zoneType;
         lot.zoneType = zoneType;
-        const recipe = this.resolver.resolve( lot, availableResourceIds );
+        const recipe = this.resolver.resolve( city, lot, availableResourceIds );
         lot.zoneType = previousZone;
 
         return recipe;
@@ -48,7 +49,7 @@ export class ZoningTool {
         if ( lot.isDeveloped ) return null;
 
         lot.zoneType = zoneType;
-        const recipe = this.resolver.resolve( lot, availableResourceIds );
+        const recipe = this.resolver.resolve( city, lot, availableResourceIds );
 
         return recipe ? developLot( city, lot, recipe ) : null;
 
@@ -65,7 +66,7 @@ export class ZoningTool {
 
             if ( lot.zoneType === ZoneType.NONE || lot.isDeveloped ) continue;
 
-            const recipe = this.resolver.resolve( lot, availableResourceIds );
+            const recipe = this.resolver.resolve( city, lot, availableResourceIds );
             if ( recipe ) developed.push( developLot( city, lot, recipe ) );
 
         }

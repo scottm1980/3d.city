@@ -12,7 +12,7 @@ export class RecipeLine {
 
 export class Recipe {
 
-    constructor ( id, { inputs = [], outputs = [], facilityArchetype, requiredZoneType, throughputPerTick = 1 } = {} ) {
+    constructor ( id, { inputs = [], outputs = [], facilityArchetype, requiredZoneType, throughputPerTick = 1, footprintSize = 1 } = {} ) {
 
         this.id = id;
 
@@ -22,6 +22,7 @@ export class Recipe {
         this.facilityArchetype = facilityArchetype;   // resolved Facility.archetypeId
         this.requiredZoneType = requiredZoneType;      // ZoneType this recipe is eligible on
         this.throughputPerTick = throughputPerTick;
+        this.footprintSize = footprintSize;             // side length of the square lot area this facility occupies, centered on the anchor lot
 
     }
 

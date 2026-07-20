@@ -11,7 +11,8 @@ export class Lot {
         this.resourceEndowment = null;  // ResourceEndowment | null, set by Tier 2
 
         this.zoneType = ZoneType.NONE;  // player-assigned designation
-        this.facility = null;           // Facility | null, resolved by Tier 3
+        this.facility = null;           // Facility | null, set only on a footprint's anchor lot
+        this.occupiedBy = null;         // facility id | null, set on every lot in a footprint (including the anchor)
 
     }
 
@@ -21,9 +22,12 @@ export class Lot {
 
     }
 
+    // True for both the anchor lot (which also holds .facility) and every
+    // other lot inside that facility's footprint - occupied either way,
+    // even though only the anchor holds the actual Facility object.
     get isDeveloped () {
 
-        return this.facility !== null;
+        return this.occupiedBy !== null;
 
     }
 

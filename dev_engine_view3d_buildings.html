@@ -23,14 +23,13 @@
 	// GPL CityGame.js.
 	//
 	// Base.toolSet's building tools use a fixed 3x3 footprint centered on
-	// (x,y) (confirmed by reading Base.js's Zone() function, MIT code),
-	// which src/engine's Lot model (1 lot = 1 facility, no footprint or
-	// adjacency concept) doesn't natively account for - see the note in
-	// RENDERER_INTEGRATION_FINDINGS.md. This harness sidesteps that
-	// mismatch by placing facilities on a deliberately spaced grid rather
-	// than using the dense auto-grown output from RegionOrchestrator, so
-	// this proves building geometry renders correctly, not yet a real
-	// footprint-aware placement policy.
+	// (x,y) (confirmed by reading Base.js's Zone() function, MIT code).
+	// src/engine now knows about this too (Recipe.footprintSize,
+	// ZoneResolver's footprint-clearance check, developLot() claiming the
+	// whole footprint via Lot.occupiedBy) - so this harness deliberately
+	// attempts a DENSE, overlap-prone candidate grid (every 2 tiles) to
+	// prove the engine itself rejects placements that would overlap,
+	// rather than sidestepping the problem with pre-spaced candidates.
 	import { View } from './src/city3d/View.js';
 	import { Hub } from './src/city3d/Hub.js';
 	import { AppState } from './src/AppState.js';
@@ -55,7 +54,7 @@
 		[ ZoneType.COMMERCIAL ]:  2, // 'commercial',  geo:2, size:3
 		[ ZoneType.INDUSTRIAL ]:  3, // 'industrial',  geo:3, size:3
 	};
-	const FOOTPRINT_SPACING = 4; // >=3 avoids overlapping 3x3 footprints, +1 margin
+	const CANDIDATE_SPACING = 2; // deliberately dense/overlap-prone (footprints are 3x3) - the engine's own clearance check should reject the overlaps, not this harness
 	const EDGE_MARGIN = 2;
 
 	function status ( text ) {
@@ -84,29 +83,33 @@
 
 	}
 
-	// Deliberately spaced grid, cycling residential/commercial/industrial,
-	// skipping water lots - sidesteps the footprint/adjacency mismatch
-	// noted above rather than pretending to solve it here.
+	// Dense, deliberately overlap-prone candidate grid - the engine's own
+	// footprint-clearance check (inside resolve()) is what should reject
+	// candidates that would overlap an already-placed building, not any
+	// spacing logic in this harness.
 	function placeBuildings ( city, region, resolver ) {
 
 		const zoneCycle = [ ZoneType.RESIDENTIAL, ZoneType.COMMERCIAL, ZoneType.INDUSTRIAL ];
 		const available = new Set( [ 'labor', 'iron_ore', 'coal', 'timber', 'grain', 'fish', 'oil' ] ); // permissive - this test is about rendering, not re-proving Tier 3/4 gating
 		const placed = [];
 		let cycleIndex = 0;
+		let attempted = 0;
+		let rejectedByFootprint = 0;
 
-		for ( let y = EDGE_MARGIN; y < city.height - EDGE_MARGIN; y += FOOTPRINT_SPACING ) {
+		for ( let y = EDGE_MARGIN; y < city.height - EDGE_MARGIN; y += CANDIDATE_SPACING ) {
 
-			for ( let x = EDGE_MARGIN; x < city.width - EDGE_MARGIN; x += FOOTPRINT_SPACING ) {
+			for ( let x = EDGE_MARGIN; x < city.width - EDGE_MARGIN; x += CANDIDATE_SPACING ) {
 
 				const lot = city.lotAt( x, y );
 				if ( ! lot || lot.terrain === TerrainType.WATER || lot.isDeveloped ) continue;
 
+				attempted ++;
 				const zoneType = zoneCycle[ cycleIndex % zoneCycle.length ];
 				cycleIndex ++;
 
 				lot.zoneType = zoneType;
-				const recipe = resolver.resolve( lot, available );
-				if ( ! recipe ) continue; // stays zoned but undeveloped, same semantics as the other previews
+				const recipe = resolver.resolve( city, lot, available );
+				if ( ! recipe ) { rejectedByFootprint ++; continue; } // stays zoned but undeveloped - either no clearance or, less likely here, unsatisfiable inputs
 
 				const facility = developLot( city, lot, recipe );
 				placed.push( { x, y, zoneType, archetypeId: facility.archetypeId } );
@@ -115,7 +118,7 @@
 
 		}
 
-		return placed;
+		return { placed, attempted, rejectedByFootprint };
 
 	}
 
@@ -123,7 +126,7 @@
 
 		try {
 
-			status( 'generating city + zoning a spaced building grid...' );
+			status( 'generating city + zoning a dense, overlap-prone building grid...' );
 			const size = 96;
 			const city = new CityState( 'preview', 'Preview', { width: size, height: size, controlMode: ControlMode.MANAGED } );
 			new CityMapGenerator( 1 ).generate( city );
@@ -135,7 +138,19 @@
 			region.addCity( city );
 
 			const resolver = new ZoneResolver( region.recipes, geographicResourceIds( DefaultResourceRules ) );
-			const placed = placeBuildings( city, region, resolver );
+			const { placed, attempted, rejectedByFootprint } = placeBuildings( city, region, resolver );
+
+			// Verify no two placed facilities' footprints actually overlap -
+			// the real correctness check for this fix, not just a render count.
+			const claimedTiles = new Map(); // "x,y" -> facility id
+			let overlapCount = 0;
+			for ( const facility of city.facilities.values() ) {
+				for ( const footprintLot of facility.footprint ) {
+					const key = footprintLot.x + ',' + footprintLot.y;
+					if ( claimedTiles.has( key ) ) overlapCount ++;
+					claimedTiles.set( key, facility.id );
+				}
+			}
 
 			const tilesData = buildTilesData( city );
 
@@ -151,6 +166,10 @@
 			AppState.tilesData = tilesData;
 			AppState.view3d.paintMap( [ size, size ], false );
 			AppState.view3d.clearIntro();
+			// See dev_shoreline research: AppState.hub.start() (not just
+			// clearIntro()) is what actually fades out and removes the
+			// loading overlay - Main.start() would normally trigger it.
+			AppState.hub.start();
 
 			status( `placing ${ placed.length } buildings via real selectTool()/build()...` );
 			let builtCount = 0;
@@ -169,8 +188,11 @@
 			window.__engineView3DBuildingsReady = {
 				ok: true,
 				size,
+				candidateGridAttempts: attempted,
 				resolvedFacilities: placed.length,
+				rejectedByFootprintClearance: rejectedByFootprint,
 				builtCount,
+				overlapCount, // must be 0 - the actual correctness check for this fix
 				zoneBreakdown: placed.reduce( ( acc, p ) => { acc[ p.zoneType ] = ( acc[ p.zoneType ] || 0 ) + 1; return acc; }, {} ),
 			};
 
