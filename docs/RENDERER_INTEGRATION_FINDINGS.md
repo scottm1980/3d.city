@@ -239,18 +239,82 @@ confirmed present in the scene), and sampled entries' building-type codes
 residential, commercial, and industrial each routed to the correct model
 family.
 
+## Footprint-aware building placement: fixed for real
+
+The data-model gap flagged above is closed. `src/engine` now knows about
+multi-tile footprints: `Recipe.footprintSize` (default 1, set to 3 across
+`DefaultRecipes.js` to match `Base.toolSet`'s fixed 3×3 building tools),
+`Lot.occupiedBy` (set on every tile of a placed facility's footprint, not
+just the anchor — `isDeveloped` now reflects this), `Facility.footprint`
+(every `Lot` it occupies), and a new `footprintTiles(city, lot, size)` in
+`ZoneResolver.js` that `resolve()` consults before returning a recipe —
+rejecting it if the footprint would go out of bounds, cross water, or
+overlap another facility.
+
+Verified past "doesn't crash" into the actual correctness property: a
+headless test zoned every non-water lot in a city at 1-tile density (a
+maximally overlap-prone stress test) and confirmed, by construction, zero
+overlapping footprints among everything that got placed. The full Tier
+4/7 regional-growth regression (75 ticks, multiple cities) still passes
+with zero footprint overlaps region-wide. `dev_engine_view3d_buildings.html`
+was updated to match: the synthetic 4-tile-spaced placement grid was
+replaced with a dense, deliberately overlap-prone 2-tile grid (2,074
+candidate attempts) routed through the real renderer, and the engine's
+own clearance check correctly rejected 1,555 of them, placing 519 with
+zero overlaps — confirmed both by the harness's own overlap check and by
+`view3d.buildingLists`' exact entry count (519) and real geometry (86,154
+vertices, all confirmed in-scene). The building preview screenshot is now
+genuinely readable: colored R/C/I markers spread across the ground in a
+clean, non-overlapping grid.
+
+## Loading overlay: found and fixed
+
+The `Pool.js` loading-status overlay flagged as open in the last two
+milestones has a real fix, found while researching shoreline tiles:
+`Hub.start()` — not `View.clearIntro()` — is what actually fades out and
+removes the `"Loading 3d models..."` DOM overlay, via its own
+self-contained `setInterval` timer with no Worker/`CityGame.js`
+dependency. `clearIntro()` only ever removed the 3D scene's title/border
+objects and the menu buttons (`clearStartHub()`); the loading overlay
+itself is a separate DOM element (`Hub.full`) that `Hub.start()` owns.
+Both `View.js`-driving previews now call it and produce genuinely
+unobstructed (or near-unobstructed, fade-timing permitting) screenshots.
+
+## Shoreline blending: substantial research, still unresolved
+
+Made real progress but did not ship an implementation. Located the exact
+texture atlas (`assets/textures/tiles.png`) and its precise slicing
+formula via `Pool.js`'s `makePixelData()` (32px cells, column = `id % 32`,
+row = `floor(id / 32)`), and confirmed the atlas-to-render texture copy is
+direct and unrotated (`copyTextureToTexture`, no transform), meaning atlas
+pixels are a faithful, first-hand preview of actual render output —
+reading them is looking at a game asset image, not GPL code. Visually
+classified the water-border tile range (5-20): solid land (4-9, 18, 20),
+solid water (15, 17), several north-edge-like wavy shapes (10-13), and a
+few diagonal corners (14, 16, 19).
+
+**What's still missing**: only about 6 of the 16 possible neighbor
+orientations are visually distinguishable in this range — no clear south,
+east, or west straight edges, and no rotation mechanism was found in the
+renderer code that would explain filling the gap at render time. Which
+world-space direction the image's "up" corresponds to is also still
+unconfirmed — an attempt to resolve this with a live, controlled
+water/land test render got entangled with the loading-overlay issue above
+(now fixed) and wasn't completed before time ran out on this pass.
+
+**Deliberately not pursued**: `MapGenerator.js`'s `riverEdge[16]` lookup
+table, which would very likely answer the orientation question directly.
+That table is GPL creative expression — a specific 16-entry data
+structure encoding tile-orientation logic — not a minimal, individually-
+named numeric constant like `DIRT=0`/`RIVER=2`/`TREEBASE=21`. Shoreline
+blending needs either a completed live-render empirical test (the
+loading-overlay blocker is now resolved, so this is unblocked for a
+follow-up) or acceptance of partial/asymmetric coverage.
+
 ## What's still open
 
-- Shoreline blending — needs empirical derivation against the real
-  renderer (see above), deliberately not read from GPL source.
-- A real footprint/adjacency-aware building placement policy in
-  `src/engine` (Tier 3/5) — today's `Lot` model doesn't know buildings can
-  span multiple tiles or need spacing; the spaced-grid workaround above
-  is a rendering-proof shortcut, not a design decision.
-- The `Pool.js` loading-status overlay that stayed visible over the
-  rendered terrain in both `View.js` previews — not investigated further;
-  likely gated on full asset preload rather than anything wrong with the
-  render itself.
+- Shoreline blending (see above) — now unblocked for a follow-up attempt
+  since the loading-overlay issue is fixed, but not completed here.
 - Porting the multi-instance vehicle / multi-city work from
   `dev_engine_region_3d.html` into `View.js`'s actual scene, camera, and
   Hub UI (still a standalone page today) — and building real vehicle
