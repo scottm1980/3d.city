@@ -93,16 +93,39 @@ rendered `[196,150,93]` is precisely an 80% blend of desert terrain toward
 lumber's tint `0xc08a52`). Confirms the resolution → recipe → cargo-visual
 → pixel chain is wired correctly end to end, not just plausible-looking.
 
+## What's also done: `dev_engine_region.html`
+
+Proves the two hardest rendering gaps are solvable in principle: a
+multi-city region view (cities as nodes sized by facility count,
+corridors as lines colored/thickened by real-time load-vs-capacity) and
+many concurrent vehicle instances (every in-transit cross-city `Shipment`
+rendered as its own moving dot, animated live via `setInterval`-driven
+`orchestrator.tick()` calls, tinted by Tier 6's cargo visuals). Still a
+flat 2D canvas, zero involvement from `CityGame.js`/`WorkerBridge.js`/GPL
+`src/micro`.
+
+Caught and fixed a real bug via browser verification that static review
+missed: `visualForShipment` was imported from the wrong module
+(`DefaultCargoVisuals.js` instead of `CargoVisual.js`, where it's actually
+defined) — a silent runtime failure that wouldn't have shown up without
+actually loading the page.
+
+Verified via Playwright: zero JS errors, and a stable 111–122 concurrent
+visible shipments sampled across 10 frames over 3 seconds (not a one-off
+spike). The screenshot shows dots queued densely along corridor lines like
+real freight traffic, visibly congesting between cities — the exact
+"watch a real bottleneck" mechanic the whole design was chasing.
+
 ## What's still open
 
-- The multi-instance vehicle rendering the sprite system currently can't
-  do — a prerequisite for shipments ever being visible as multiple trucks.
-- A multi-city/region view — new UI and camera work, not present in any
-  form today.
-- A real `View.js`/Three.js integration path (these dev previews use a
+- A real `View.js`/Three.js integration path (all three dev previews use a
   flat 2D canvas, not the actual 3D renderer) — needs a tile-encoding
   decision that doesn't require replicating the GPL numeric ID table
-  exactly.
+  exactly, and porting the multi-instance vehicle / multi-city node
+  approach proven above into real Three.js geometry (likely
+  `InstancedMesh`, per the GPU-driven instancing item in
+  `GRAPHICS_ENGINE_UPGRADE.md` — the cargo visuals were already designed
+  with that in mind).
 - Eventually: replacing `CityGame.js` as the Worker's actual entry point
   and repointing `utils/rollup.config.city.js`, once the above make that
   safe to do without regressing the shipping game.
