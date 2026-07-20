@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine city preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+</head>
+<style>
+*{ padding:0; margin: 0; -o-user-select:none; -ms-user-select:none; -khtml-user-select:none; -webkit-user-select:none; -moz-user-select: none;}
+html { width:100%; height:100%; }
+body { background:#8397ac; font:10px sans-serif; width:100%; height:100%; color:#FFFFFF; overflow: hidden; }
+
+#hub{ position:absolute; top:0; left:0; height:100%; width:100%; pointer-events:none; display:block; text-align:center;}
+
+</style>
+<script type="module">
+	// Second dev preview, extending dev_engine_mapgen.html's terrain-only
+	// proof to the full single-city pipeline: generation -> zoning ->
+	// facility resolution -> trade production, all from src/engine, with
+	// zero involvement from CityGame.js/WorkerBridge.js/GPL src/micro.
+	//
+	// The city is set to AUTOMATED and driven entirely by
+	// RegionOrchestrator - same mechanism already verified in the Tier 7
+	// capstone test (a whole regional economy growing from zero manual
+	// zoning) - so this page proves that pipeline is real and visible,
+	// not just something a Node script asserted.
+	import { CityState, ControlMode } from './src/engine/world/CityState.js';
+	import { CityMapGenerator } from './src/engine/worldgen/CityMapGenerator.js';
+	import { TerrainType } from './src/engine/worldgen/Terrain.js';
+	import { RegionState } from './src/engine/world/RegionState.js';
+	import { RegionOrchestrator } from './src/engine/orchestrator/RegionOrchestrator.js';
+	import { DefaultResourceTypes } from './src/engine/worldgen/DefaultResources.js';
+	import { DefaultRecipes, DefaultProcessedResourceTypes } from './src/engine/resolution/DefaultRecipes.js';
+	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
+	import { ShipmentState } from './src/engine/trade/Shipment.js';
+
+	let canvas = null;
+
+	const MAP_SIZES = {
+	    SMALL:  [64,  64],
+	    MEDIUM: [128, 128],
+	    LARGE:  [192, 192],
+	};
+
+	const TERRAIN_COLOR = {
+	    [TerrainType.WATER]:    [ 58, 102, 158 ],
+	    [TerrainType.PLAINS]:   [ 150, 189, 96 ],
+	    [TerrainType.FOREST]:   [ 60, 110, 60 ],
+	    [TerrainType.HILLS]:    [ 150, 129, 90 ],
+	    [TerrainType.MOUNTAIN]: [ 120, 120, 128 ],
+	    [TerrainType.DESERT]:   [ 214, 196, 135 ],
+	};
+
+	const PENDING_ZONE_COLOR = [ 225, 225, 225 ]; // zoned but not yet resolved - waiting on inputs
+	const PENDING_MIX = 0.45;
+	const FACILITY_MIX = 0.8; // developed lots read mostly as their facility color, like a building footprint
+
+	const setting = {
+		size: 'MEDIUM',
+		seed: 1,
+		ticks: 60,
+	};
+
+	function buildRegion () {
+
+		const size = MAP_SIZES[ setting.size ];
+		const city = new CityState( 'preview', 'Preview', { width: size[0], height: size[1], controlMode: ControlMode.AUTOMATED } );
+		new CityMapGenerator( setting.seed ).generate( city );
+
+		const region = new RegionState( 'preview-region', 'Preview Region' );
+		for ( const rt of DefaultResourceTypes ) region.resources.register( rt );
+		for ( const rt of DefaultProcessedResourceTypes ) region.resources.register( rt );
+		for ( const recipe of DefaultRecipes ) region.recipes.register( recipe );
+		region.addCity( city );
+
+		return { region, city };
+
+	}
+
+	function run () {
+
+		setting.size = document.getElementById( 'size' ).value;
+		setting.seed = parseInt( document.getElementById( 'seed' ).value, 10 ) || 1;
+		setting.ticks = parseInt( document.getElementById( 'ticks' ).value, 10 ) || 60;
+
+		const { region, city } = buildRegion();
+		const orchestrator = new RegionOrchestrator( region, { seed: setting.seed, automatedTickInterval: 1 } );
+
+		for ( let i = 0; i < setting.ticks; i ++ ) orchestrator.tick();
+
+		render( region, city );
+
+	}
+
+	function facilityColor ( region, cargoRegistry, facility ) {
+
+		const recipe = region.recipes.get( facility.archetypeId );
+		if ( ! recipe || recipe.outputs.length === 0 ) return [ 255, 0, 255 ];
+
+		const visual = cargoRegistry.resolve( recipe.outputs[0].resourceId, region.resources );
+		return visual ? hexToRgb( visual.tint ) : [ 255, 0, 255 ];
+
+	}
+
+	function hexToRgb ( hex ) {
+
+		return [ ( hex >> 16 ) & 255, ( hex >> 8 ) & 255, hex & 255 ];
+
+	}
+
+	function render ( region, city ) {
+
+		if ( canvas ) document.body.removeChild( canvas );
+
+		const w = city.width;
+		const h = city.height;
+		const cargoRegistry = createDefaultCargoVisualRegistry();
+
+		canvas = document.createElement( 'canvas' );
+		canvas.width = w;
+		canvas.height = h;
+		canvas.style.cssText = 'position:absolute; left:10px; top:120px; transform: scale(6); image-rendering: pixelated;';
+
+		const ctx = canvas.getContext( '2d' );
+		const imageData = ctx.getImageData( 0, 0, w, h );
+		const data = imageData.data;
+
+		const archetypeCounts = {};
+		let developedCount = 0, zonedPendingCount = 0;
+
+		for ( const lot of city.lots ) {
+
+			const n = ( lot.y * w + lot.x ) * 4;
+			let [ r, g, b ] = TERRAIN_COLOR[ lot.terrain ] || [ 255, 0, 255 ];
+
+			if ( lot.isDeveloped ) {
+
+				developedCount ++;
+				archetypeCounts[ lot.facility.archetypeId ] = ( archetypeCounts[ lot.facility.archetypeId ] || 0 ) + 1;
+
+				const tint = facilityColor( region, cargoRegistry, lot.facility );
+				r = r * ( 1 - FACILITY_MIX ) + tint[0] * FACILITY_MIX;
+				g = g * ( 1 - FACILITY_MIX ) + tint[1] * FACILITY_MIX;
+				b = b * ( 1 - FACILITY_MIX ) + tint[2] * FACILITY_MIX;
+
+			} else if ( lot.zoneType !== 'none' ) {
+
+				zonedPendingCount ++;
+				r = r * ( 1 - PENDING_MIX ) + PENDING_ZONE_COLOR[0] * PENDING_MIX;
+				g = g * ( 1 - PENDING_MIX ) + PENDING_ZONE_COLOR[1] * PENDING_MIX;
+				b = b * ( 1 - PENDING_MIX ) + PENDING_ZONE_COLOR[2] * PENDING_MIX;
+
+			}
+
+			data[ n ]     = r;
+			data[ n + 1 ] = g;
+			data[ n + 2 ] = b;
+			data[ n + 3 ] = 255;
+
+		}
+
+		ctx.putImageData( imageData, 0, 0 );
+		document.body.appendChild( canvas );
+
+		const shipments = Array.from( region.shipments.values() );
+		const delivered = shipments.filter( s => s.state === ShipmentState.DELIVERED ).length;
+
+		const debug = document.getElementById( 'debug' );
+		const summary = {
+			seed: setting.seed,
+			ticks: setting.ticks,
+			size: w + 'x' + h,
+			developed: developedCount,
+			zonedPending: zonedPendingCount,
+			archetypes: archetypeCounts,
+			shipmentsCreated: shipments.length,
+			shipmentsDelivered: delivered,
+		};
+		debug.textContent = JSON.stringify( summary );
+
+		// Signal for automated verification.
+		window.__engineCityPreviewReady = summary;
+		window.__engineCityPreviewCity = city;
+
+	}
+
+	document.getElementById( 'run' ).addEventListener( 'click', run );
+	run();
+
+</script>
+
+<div id="hub"></div>
+<div style="position:absolute; left:10px; top:10px; z-index:1; background:rgba(0,0,0,0.6); padding:8px; font:12px monospace;">
+	<div>engine city preview (terrain -> zoning -> facilities -> trade)</div>
+	<label>size
+		<select id="size">
+			<option value="SMALL">SMALL</option>
+			<option value="MEDIUM" selected>MEDIUM</option>
+			<option value="LARGE">LARGE</option>
+		</select>
+	</label>
+	<label>seed <input id="seed" type="number" value="1" min="1" max="9999" style="width:60px;"></label>
+	<label>ticks <input id="ticks" type="number" value="60" min="1" max="500" style="width:60px;"></label>
+	<button id="run">RUN</button>
+</div>
+<div id="debug" style="position:absolute; left:10px; bottom:10px; font:12px monospace; background:rgba(0,0,0,0.5); padding:4px 8px; max-width:90%; word-wrap:break-word;"></div>
+
+</body></html>
