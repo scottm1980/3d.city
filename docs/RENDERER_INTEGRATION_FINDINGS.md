@@ -174,14 +174,44 @@ texture-atlas architecture documented above, not a coincidence. Confirms
 the production rendering pipeline genuinely painted `src/engine`'s terrain
 data using its real texture system.
 
+## Richer tile encoding: trees added, confirmed real
+
+Extended the water/ground-only pass to FOREST terrain using `Tile.js`'s
+own documented constants (`TREEBASE=21`..`LASTTREE=36`), read for interop
+with the renderer's value contract, not guessed. Confirmed via `View.js`'s
+own `drawLayer()` (MIT code) that tree values 21-29 skip ground-texture
+drawing entirely and route through a separate real 3D mesh pipeline
+(`addTree` → `populateTree` → `buildMeshLayer`), not a flat texture like
+water/ground.
+
+Verified past the tile-count check into the rendering pipeline's own
+bookkeeping: `view3d.treeLists` contains exactly 861 entries, an exact
+match against the 861 tree tiles emitted (not a coincidence), and 15 of
+the 36 chunk layers built real merged tree geometry (129 to 8,414 vertices
+each, 31,378 total), every one confirmed present in the actual Three.js
+scene with a real material.
+
+**Shoreline blending was traced but deliberately not attempted.** Cleared
+of licensing concern — `Zone()`/`ZoneExtand()` (`src/city3d/Base.js`) are
+MIT code, not GPL — but it's real complexity: the water-border value range
+(5-20) drives height-map deformation intertwined with several special-cased
+branches (`v===13/14`, `v===9/10`, `v===11/12`, `v===7/8`, `v===15/16` each
+doing something different), and getting the neighbor-to-tile-ID
+orientation table right needs either authoritative documentation (not
+found in `Tile.js`'s constants alone — the individual 5-20 IDs aren't
+individually named) or empirical per-value testing, neither pursued here.
+
 ## What's still open
 
+- Shoreline blending (see above — scoped, not attempted).
 - The `Pool.js` loading-status overlay that stayed visible over the
   rendered terrain — not investigated further; likely gated on full asset
-  preload (including DRACO models unrelated to this water/ground-only
-  test) rather than anything wrong with the render itself.
-- Richer tile encoding: shoreline blending, trees, and buildings — this
-  pass proved water/ground only, deliberately the minimal safe case.
+  preload (including DRACO models unrelated to these tests) rather than
+  anything wrong with the render itself.
+- Buildings — the "MESH BUILD" tile range (`≥240`) is driven by
+  client-side lists populated via the `BUILD` message/tool interaction,
+  not by `tilesData` values alone (see the original protocol research) —
+  a different, more involved integration than water/ground/trees.
 - Porting the multi-instance vehicle / multi-city work from
   `dev_engine_region_3d.html` into `View.js`'s actual scene, camera, and
   Hub UI (still a standalone page today) — and building real vehicle
