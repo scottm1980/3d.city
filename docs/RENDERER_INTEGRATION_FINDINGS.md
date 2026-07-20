@@ -530,6 +530,55 @@ expected status message. A screenshot confirms the real BUILD panel,
 top bar, and population/money/score/happiness readouts are genuinely
 present and rendered, not just constructed in the DOM.
 
+## Demolition: BulldozeTool, closing a gap the engine never had
+
+The interactive milestone above could zone but not un-zone — `src/engine`
+had no way to remove a facility at all, so the real bulldozer tool (id 8,
+already present in `Base.toolSet` and the real BUILD panel) was a dead
+button with nothing behind it. Closed for real, not stubbed out:
+
+- `ZoneResolver.js` gained `undevelopLot( city, lot )`, the inverse of
+  `developLot()`: frees every tile in the facility's footprint (not just
+  the anchor), clears the anchor's `.facility`/`.zoneType`, and removes
+  the `Facility` from `city.facilities` — the lots become genuinely
+  zoneable again, not just visually cleared.
+- `src/engine/tools/BulldozeTool.js` (Tier 5, new) is the player-facing
+  wrapper: `demolish( city, lot )`, same `managed`-only control-mode
+  scoping as `ZoningTool` (throws on an `automated` city). `lot` can be
+  any tile inside the footprint, not just the anchor — resolved via
+  `Lot.occupiedBy` — matching how `View.js`'s own `testDestruct` lets a
+  real player click anywhere on a building to remove it.
+- `RegionOrchestrator` now constructs `this.bulldozeTool` alongside
+  `this.zoningTool`, following the same "player-driven, orchestrator
+  never touches it directly" pattern.
+- In the preview, `AppState.main.mapClick('bulldozer')` resolves the
+  clicked lot, calls `orchestrator.bulldozeTool.demolish(...)` to update
+  `src/engine` state, drops the removed facility's id from
+  `renderedFacilityIds` (so a future building on the same tiles isn't
+  mistaken for already-rendered), then calls the real
+  `view3d.build(x,y)` — which internally runs `View.js`'s own
+  `testDestruct()`, the actual mesh/geometry removal the shipping game
+  itself uses, unmodified.
+
+Verified two ways. Headlessly first (a plain Node script, not committed,
+matching this repo's existing test-script convention): develop a lot,
+demolish it via a non-anchor footprint-edge tile, confirm the facility is
+gone from `city.facilities`, every footprint tile's `occupiedBy` is
+freed, the anchor's `zoneType` resets, re-zoning the same footprint
+immediately resolves a *new* facility with a fresh id, demolishing an
+already-empty lot is a safe no-op, and demolishing in an automated city
+throws. Then in the real browser, driving the actual
+`selectTool`/`mapClick` entry points: zoning a lot (facility count and
+`view3d.buildingLists`' real entry count both +1) → bulldozing it via a
+different footprint tile (both −1, `lot.isDeveloped` false, `zoneType`
+`none`) → bulldozing again (no change, confirmed against the pre-tick
+snapshot to avoid the live 200ms simulation interval's own independent
+growth confounding the count) → re-zoning the identical tiles as a
+different zone type (both +1 again, resolving to a genuinely different
+archetype — `retail` this time, not the earlier `housing` — proving the
+footprint was actually freed, not left in a stale state). Zero
+JS/console errors throughout.
+
 ## What's still open
 
 - Shoreline blending — see round 2 above. Not a matter of more guessing;

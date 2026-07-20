@@ -2,6 +2,7 @@ import { TradeResolver, availableResourceIds } from '../trade/TradeResolver.js';
 import { ShipmentState } from '../trade/Shipment.js';
 import { ZoneResolver, geographicResourceIds } from '../resolution/ZoneResolver.js';
 import { ZoningTool } from '../tools/ZoningTool.js';
+import { BulldozeTool } from '../tools/BulldozeTool.js';
 import { TownCharterTool, DefaultTownCharter } from '../tools/TownCharterTool.js';
 import { SeededRandom } from '../worldgen/SeededRandom.js';
 import { DefaultResourceRules } from '../worldgen/DefaultResources.js';
@@ -42,6 +43,7 @@ export class RegionOrchestrator {
         this.trade = new TradeResolver( region );
         this.resolver = new ZoneResolver( region.recipes, geographicResourceIds( resourceRules ) );
         this.zoningTool = new ZoningTool( this.resolver );
+        this.bulldozeTool = new BulldozeTool();
         this.charterTool = new TownCharterTool( this.resolver );
         this.rng = new SeededRandom( seed );
 
@@ -53,9 +55,11 @@ export class RegionOrchestrator {
 
     }
 
-    // Player-driven zoning on a managed city goes through this.zoningTool
-    // directly (e.g. orchestrator.zoningTool.zone(...)) - the orchestrator
-    // never auto-zones a managed city, only automated ones via the charter.
+    // Player-driven zoning/demolition on a managed city goes through
+    // this.zoningTool/this.bulldozeTool directly (e.g.
+    // orchestrator.zoningTool.zone(...)) - the orchestrator never
+    // auto-zones or auto-demolishes a managed city, only grows automated
+    // ones via the charter.
     tick () {
 
         this.orchestratorTick ++;

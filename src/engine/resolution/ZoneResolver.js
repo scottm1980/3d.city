@@ -114,3 +114,23 @@ export function developLot ( city, lot, recipe ) {
     return facility;
 
 }
+
+// The undo of developLot(): frees every tile in the facility's footprint
+// (not just the anchor) and removes it from the city, so the lots become
+// zoneable/resolvable again. `lot` may be any tile in the footprint, not
+// only the anchor - callers (BulldozeTool) resolve the actual anchor via
+// Lot.occupiedBy before calling this. Returns the removed Facility, or
+// null if the lot wasn't developed.
+export function undevelopLot ( city, lot ) {
+
+    if ( ! lot.facility ) return null;
+
+    const facility = lot.facility;
+    for ( const footprintLot of facility.footprint ) footprintLot.occupiedBy = null;
+    lot.facility = null;
+    lot.zoneType = ZoneType.NONE;
+
+    city.facilities.delete( facility.id );
+    return facility;
+
+}

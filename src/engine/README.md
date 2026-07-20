@@ -68,7 +68,12 @@ recipes, and multi-city regions, which have no equivalent in the original.
   real renderer's fixed 3×3 building tools (`Base.toolSet`, see
   `RENDERER_INTEGRATION_FINDINGS.md`). `DefaultRecipes.js` is example
   content (mines, farms, a steel/lumber processing chain, housing, retail)
-  proving the mechanism, not a final content list.
+  proving the mechanism, not a final content list. `undevelopLot()` is
+  `developLot()`'s inverse — frees every footprint tile's `occupiedBy`,
+  clears the anchor's `facility`/`zoneType`, and removes the `Facility`
+  from `city.facilities`, making the lots genuinely zoneable again rather
+  than just visually cleared. `BulldozeTool` (Tier 5) is the player-facing
+  wrapper around it.
 
 - **`trade/TradeResolver.js`** — Tier 4. `TradeResolver.tick()` runs the
   region's economic heartbeat: production/consumption for every developed
@@ -100,6 +105,16 @@ recipes, and multi-city regions, which have no equivalent in the original.
     for deterministic, replayable growth. `maxLots` caps successful
     developments per call, not lots zoned - unresolved ones stay zoned for
     `ZoningTool.reattempt()` to pick up later.
+  - `BulldozeTool` — for `managed` cities, the demolition counterpart to
+    `ZoningTool`. `demolish( city, lot )` removes whatever facility
+    occupies `lot` via `ZoneResolver.js`'s `undevelopLot()` (the inverse
+    of `developLot()`: frees every tile in the facility's footprint, not
+    just the anchor, and drops it from `city.facilities`). `lot` can be
+    any tile inside a multi-tile facility's footprint, not only its
+    anchor - resolved via `Lot.occupiedBy` first, matching how the real
+    renderer's own bulldozer (`View.js`'s `testDestruct`) lets a player
+    click anywhere on a building to remove it. Throws on an `automated`
+    city, same scoping as `ZoningTool`.
   - `FoundCityTool` — places one new city node into an existing region
     network (minimum-spacing enforced, connects to the nearest existing
     cities), generating its map via the same `CityMapGenerator` Tier 2 uses.
