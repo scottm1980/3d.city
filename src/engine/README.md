@@ -43,24 +43,32 @@ recipes, and multi-city regions, which have no equivalent in the original.
     separately.
   - Both are deterministic per seed.
 
-- **`resolution/`** — Tier 3. `ZoneResolver` decides what a zoned,
-  undeveloped `Lot` becomes: it walks the `RecipeRegistry` for the lot's
-  `zoneType` and returns the first recipe that's satisfiable, where
-  "satisfiable" means either the lot's own resource endowment matches an
-  extraction recipe's output (geography-gated, via `geographicResourceIds`)
-  or, for a zero-input recipe with a non-geographic output like housing's
-  labor, it's simply available once zoned; processing/manufacturing
-  recipes resolve once their inputs appear in a caller-supplied
-  `availableResourceIds` set. That set is a placeholder for what Tier 4
-  will compute from local production + shipments — `ZoneResolver` doesn't
-  care where availability comes from, only what to do with it. One
-  resolver handles every zone type uniformly (residential "produces"
-  labor the same way a mine produces ore), replacing the RCI growth-stage
-  math and the `zone/Residential.js`/`Commercial.js`/`Industrial.js`
-  classes entirely. `developLot()` attaches the resolved recipe's
-  `Facility` to the lot. `DefaultRecipes.js` is example content (mines,
-  farms, a steel/lumber processing chain, housing, retail) proving the
-  mechanism, not a final content list.
+- **`resolution/`** — Tier 3. `ZoneResolver.resolve(city, lot,
+  availableResourceIds)` decides what a zoned, undeveloped `Lot` becomes:
+  it walks the `RecipeRegistry` for the lot's `zoneType` and returns the
+  first recipe that's satisfiable, where "satisfiable" means the lot's own
+  resource endowment matches an extraction recipe's output
+  (geography-gated, via `geographicResourceIds`), or a zero-input recipe
+  with a non-geographic output like housing's labor is simply available
+  once zoned, or a processing/manufacturing recipe's inputs appear in a
+  caller-supplied `availableResourceIds` set — **and** the recipe's
+  `footprintSize` × `footprintSize` area around the lot has room
+  (`footprintTiles()`: every tile in bounds, non-water, and not already
+  `occupiedBy` another facility). That availability set is a placeholder
+  for what Tier 4 will compute from local production + shipments —
+  `ZoneResolver` doesn't care where it comes from, only what to do with
+  it. One resolver handles every zone type uniformly (residential
+  "produces" labor the same way a mine produces ore), replacing the RCI
+  growth-stage math and the `zone/Residential.js`/`Commercial.js`/
+  `Industrial.js` classes entirely. `developLot()` attaches the resolved
+  `Facility` to the lot and claims its whole footprint — every tile gets
+  `occupiedBy` set (blocking further zoning there), while only the anchor
+  lot holds the `Facility` object itself (`lot.facility`). `footprintSize`
+  defaults to 1; `DefaultRecipes.js` sets it to 3 uniformly, matching the
+  real renderer's fixed 3×3 building tools (`Base.toolSet`, see
+  `RENDERER_INTEGRATION_FINDINGS.md`). `DefaultRecipes.js` is example
+  content (mines, farms, a steel/lumber processing chain, housing, retail)
+  proving the mechanism, not a final content list.
 
 - **`trade/TradeResolver.js`** — Tier 4. `TradeResolver.tick()` runs the
   region's economic heartbeat: production/consumption for every developed
