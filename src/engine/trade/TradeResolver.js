@@ -228,6 +228,18 @@ export class TradeResolver {
 
         }
 
+        // `reserved` already tracks exactly this - every corridor's
+        // in-flight quantity, including the shipments just matched above -
+        // so writing it back is the whole fix. Without this, CorridorEdge's
+        // own `load` field (documented in world/CorridorEdge.js as "owned
+        // by the Tier 4 trade resolver") stayed permanently 0, and anything
+        // reading it for congestion visualization (e.g.
+        // dev_engine_region.html's corridor coloring/thickening) was
+        // silently rendering every corridor as empty regardless of actual
+        // traffic - exactly the "visible, diagnosable bottleneck" this
+        // module's own top-of-file comment says is the point.
+        for ( const corridor of this.region.corridors.values() ) corridor.load = reserved.get( corridor.id ) || 0;
+
     }
 
     _collectDemand () {

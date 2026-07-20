@@ -632,6 +632,46 @@ confirming the full mine-demand → shipment → mill-consumption loop works
 end to end under real money constraints, not just when zoning was free.
 Zero JS/console errors throughout.
 
+## corridor.load: another inert field, found while auditing for more of the same
+
+Auditing the rest of `src/engine` for the same "documented as owned by a
+system, never actually written" pattern the budget system turned out to
+have (see above) found one more: `CorridorEdge.load` (`world/CorridorEdge.js`)
+is commented "current throughput this tick, owned by the Tier 4 trade
+resolver," but `TradeResolver` never wrote it - it stayed permanently 0.
+This isn't cosmetic: `TradeResolver.js`'s own top-of-file comment states
+the point of the whole module is that "a congested route is a visible,
+diagnosable bottleneck," and `dev_engine_region.html`'s corridor
+coloring/thickening (documented earlier in this file as a verified
+feature) reads `corridor.load` directly - meaning that visualization has
+been silently rendering every corridor as if it carried zero traffic
+regardless of actual congestion, since the milestone that supposedly
+proved it worked.
+
+Fixed in `TradeResolver._matchNewShipments()`, which already builds a
+`reserved` map (corridor id → quantity reserved by every in-transit
+shipment, including the ones just matched that same tick) purely to
+enforce capacity while creating new shipments - the exact number
+`corridor.load` should be. One line writes it back at the end of the
+method.
+
+Verified headlessly with an independent cross-check, not just "it's
+non-zero": a two-city mine→mill scenario ticked 20 times, confirming
+`load` starts at 0, goes positive once ore/coal start shipping, never
+exceeds the corridor's own `capacity` (the same clamp shipment-matching
+already enforces), and - the real proof - exactly matches a from-scratch
+recomputation summing `quantity` across every currently in-transit
+shipment whose `path` includes that corridor, on every tick checked, not
+just the end state. Then re-ran `dev_engine_region.html` (a real 6-city
+`RegionMapGenerator` scenario, now also running under the budget gating
+above) for 20 ticks: zero JS/console errors, 40 facilities grown, 10
+shipments in transit - confirming the fix doesn't disturb the existing
+region-view integration, though the browser check couldn't inspect
+`corridor.load` directly (it's closed over the preview's own module
+scope, not exposed to `window`) - the headless test is what actually
+proves this fix correct; the browser pass proves it doesn't regress
+anything.
+
 ## What's still open
 
 - Shoreline blending — see round 2 above. Not a matter of more guessing;
