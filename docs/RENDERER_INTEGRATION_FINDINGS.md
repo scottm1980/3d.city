@@ -201,17 +201,56 @@ orientation table right needs either authoritative documentation (not
 found in `Tile.js`'s constants alone — the individual 5-20 IDs aren't
 individually named) or empirical per-value testing, neither pursued here.
 
+## Buildings: real, but surfaced a genuine data-model mismatch
+
+`dev_engine_view3d_buildings.html` proved building placement — a
+genuinely different integration path than terrain. The "MESH BUILD" tile
+range (`≥240`) isn't driven by `tilesData` values; it's driven by direct
+method calls (`view3d.build(x,y)`) using whichever tool is selected
+(`view3d.selectTool(id)`), reading a small fixed catalog of ~13 building
+model variants (`Base.toolSet`, MIT code in `src/city3d/Base.js`).
+
+**Surfaced rather than papered over**: `Base.toolSet`'s building tools use
+a fixed 3×3 footprint centered on `(x,y)` (confirmed via `Base.js`'s
+`Zone()` function, MIT code), which `src/engine`'s `Lot` model (1 lot = 1
+facility, no footprint/adjacency concept) doesn't natively account for.
+This preview sidesteps the mismatch by placing facilities on a
+deliberately spaced grid (4-tile spacing) rather than the dense output
+`RegionOrchestrator` actually produces — it proves building geometry
+renders correctly, not yet a real footprint-aware placement policy. That
+gap is now explicit, not assumed away.
+
+**A licensing line drawn deliberately**: while researching shoreline
+blending, `MapGenerator.js`'s `riverEdge[16]` lookup table was located
+(the exact table needed) but its values were not read. A 16-entry data
+table mapping neighbor-bitmask patterns to specific tile IDs is GPL
+creative expression, not just a numeric interface contract like
+`DIRT=0`/`RIVER=2`/`TREEBASE=21` (which are individually-named, minimal
+constants). Shoreline blending will need independent empirical derivation
+against the real renderer's output instead of reading that table.
+
+Verified via Playwright: zero JS/console errors, 518 facilities
+zoned/resolved/built across the spaced grid (173 residential, 173
+commercial, 172 industrial). Verified past the build count into the
+pipeline's own bookkeeping: `view3d.buildingLists` has exactly 518
+entries, all 36 chunk layers built real geometry (86,062 vertices total,
+confirmed present in the scene), and sampled entries' building-type codes
+(244/427/616) exactly match `Base.R`/`Base.C`/`Base.I`'s first elements —
+residential, commercial, and industrial each routed to the correct model
+family.
+
 ## What's still open
 
-- Shoreline blending (see above — scoped, not attempted).
+- Shoreline blending — needs empirical derivation against the real
+  renderer (see above), deliberately not read from GPL source.
+- A real footprint/adjacency-aware building placement policy in
+  `src/engine` (Tier 3/5) — today's `Lot` model doesn't know buildings can
+  span multiple tiles or need spacing; the spaced-grid workaround above
+  is a rendering-proof shortcut, not a design decision.
 - The `Pool.js` loading-status overlay that stayed visible over the
-  rendered terrain — not investigated further; likely gated on full asset
-  preload (including DRACO models unrelated to these tests) rather than
-  anything wrong with the render itself.
-- Buildings — the "MESH BUILD" tile range (`≥240`) is driven by
-  client-side lists populated via the `BUILD` message/tool interaction,
-  not by `tilesData` values alone (see the original protocol research) —
-  a different, more involved integration than water/ground/trees.
+  rendered terrain in both `View.js` previews — not investigated further;
+  likely gated on full asset preload rather than anything wrong with the
+  render itself.
 - Porting the multi-instance vehicle / multi-city work from
   `dev_engine_region_3d.html` into `View.js`'s actual scene, camera, and
   Hub UI (still a standalone page today) — and building real vehicle
