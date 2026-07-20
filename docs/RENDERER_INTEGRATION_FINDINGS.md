@@ -672,11 +672,98 @@ scope, not exposed to `window`) - the headless test is what actually
 proves this fix correct; the browser pass proves it doesn't regress
 anything.
 
+## Shoreline blending, round 3: real progress, still not shippable
+
+Picked back up with a fresh angle rather than repeating round 2's
+blocked approach. Two genuine advances, one still-open contradiction -
+recorded precisely rather than rounded up to "solved."
+
+**Fixed a real misunderstanding of `View.js`'s camera, found by re-
+deriving the math instead of trusting the earlier assumption.**
+`View.js`'s `Orbit(origin, horizontal, vertical, distance)` uses
+`vertical` as the polar angle from +Y (standard spherical coordinates):
+`p.y = distance*cos(vertical)`, `p.x/p.z = distance*sin(vertical)*...`.
+That means a HIGH `vertical` (near `CAM_V_MAX=87`) is a near-horizontal
+grazing shot, and a LOW `vertical` (near `CAM_V_MIN=5`) is near-overhead
+- the opposite of what the name suggests at a glance, and the opposite
+of what round 2's attempt assumed. A first test at `vertical=80` (meant
+to be "steep") produced exactly the grazing, unusable shot that implies;
+correcting to `vertical≈15-18` immediately produced genuinely readable
+top-down screenshots showing real, distinct polygon shapes per water-
+border tile - a categorical improvement over every prior round, where
+water was barely visible at all. This is a durable, reusable finding for
+any future top-down rendering work in this codebase, independent of
+whether shoreline blending itself gets finished.
+
+**Found the actual compass-direction labels for two tile IDs directly in
+source comments - not a guess, not the avoided GPL table.** Reading
+`Base.js`'s `Zone(size, x, y, v)` (MIT code) for an unrelated reason
+turned up an explicit compass legend in its own comments (`-Y=N, +Y=S,
+-X=W, +X=E`) and two directly-labeled cases: `v===5||6 // S` and
+`v===13||14 // N`. Cross-referencing `View.js`'s height-deformation code
+(`if(v>4 && v<21)` block, around the `initRenderer`/`paintMap` height
+pass) confirms the mechanism: `13/14` *lowers* the tile's bottom-edge
+vertices (the -Y/north-facing edge) to reveal water there, while `5/6`
+*raises* that same edge back to land height - two complementary tiles
+for opposite sides of the same shoreline segment. This is genuinely
+interop-safe: a directional comment on rendering code, structurally no
+different from reading `TREEBASE=21`/`RIVER=2`, not the `riverEdge[16]`
+neighbor-to-tile lookup table this investigation has deliberately never
+read.
+
+**Reasoned out (not confirmed) the E/W pair by the same method.** The
+disabled/commented-out `v===9||10` case lowers the tile's *left*-edge
+vertices (-X/west-facing edge) - the same geometric pattern as the
+confirmed `13/14=N` case, just on the perpendicular axis - and `17/18`
+raises that identical vertex pair, mirroring how `5/6` complements
+`13/14`. By direct structural analogy (the same derivation method that
+correctly predicted the two confirmed labels): **`9,10` = West, `17,18`
+= East**. This is a well-grounded hypothesis, not a wild guess, but it
+is not independently confirmed the way `13/14`/`5/6` are.
+
+**The empirical render test of that hypothesis was inconclusive, and
+that's reported honestly rather than glossed over.** Built a corrected
+version of round 2's test (fixed camera angle, plus an explicit bright
+marker mesh placed at each water-neighbor's exact world position so
+"where is the neighbor" never has to be inferred from pixel-offset math)
+and tested ID 10 against all four cardinal directions. The N/S tests
+showed a plausibly continuous water shape; the E/W tests showed a visible
+gap between the marker and the rendered water. Taken at face value this
+contradicts the West-prediction for ID 10 - but a single isolated water
+tile next to a border tile, with land on every other side, may simply not
+be enough context for this renderer's height/water-plane system to
+produce a clean result regardless of which ID is "correct" (the
+`Zone()`/height-deformation code clearly expects multi-tile combinations,
+not one tile in isolation), and screenshot fidelity under software
+rendering remains a real confound as in every prior round. Rather than
+pick a side, this is left as an open contradiction for whoever continues
+this: trust the source-derived reasoning (which correctly predicted both
+confirmed labels) or trust the render test (which may be an artifact of
+an under-specified test map), and resolve it with either a richer test
+map (a real multi-tile pond, not an isolated water tile) or the texture-
+readback approach round 2 proposed.
+
+**Net state**: `13,14=North` and `5,6=South` are confirmed and usable.
+`9,10=West`/`17,18=East` are a strong, sourced hypothesis pending
+confirmation. The four diagonal-corner IDs (`7,8` and `19,20`, plus
+disabled dead code at `11,12`) and the remaining unexplained IDs
+(`15,16`, plus `19,20`'s exact polarity) are understood structurally
+(single-vertex or cross-diagonal deformations, some paired as secondary
+edge-completion tiles rather than primary shapes) but not resolved
+directionally. Implementing shoreline blending now with only N/S
+confirmed would produce a visibly broken result for every other
+coastline angle - worse than the current plain-edge fallback - so this
+still isn't shippable, but the next attempt has real source-derived
+ground truth for 2 of 16 values and a concrete hypothesis for 2 more,
+instead of starting from zero.
+
 ## What's still open
 
-- Shoreline blending — see round 2 above. Not a matter of more guessing;
-  needs either the texture-readback approach or a non-software-rendered
-  environment to finish verifying.
+- Shoreline blending — see round 3 above. Two values confirmed from
+  source comments, two more hypothesized but unconfirmed, the rest
+  (diagonals, secondary edge-completion tiles) still fully open. Needs
+  either a richer multi-tile test map, the texture-readback approach, or
+  a non-software-rendered environment to make further progress.
 - A real multi-city architecture in `View.js` itself (this pass used a
   combined-tilesData trick specifically to avoid refactoring `View.js`;
   a genuine region view with independently-sized, independently-loaded
