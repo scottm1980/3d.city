@@ -1198,10 +1198,85 @@ understood, already-documented transient water-plane NaN bounding-box
 warning noted elsewhere in this doc (confirmed harmless, unrelated to
 this work) - zero new errors of any kind.
 
+## Real save/load for `src/engine`: `RegionSerializer`
+
+Save/load was completely unbuilt until now. `src/engine/persistence/
+RegionSerializer.js` adds `serializeRegion(region)`/`applyRegionSnapshot
+(region, snapshot)`, covering every piece of live simulation state: per-
+city lots (terrain/zoneType/occupiedBy/resourceEndowment), facilities
+(archetype, footprint, status, input/output stock, disruption state),
+the national and per-city budgets (treasury, allocation, local revenue,
+spend-by-category), corridors (load, disruption state), shipments (full
+state including transit progress and history), and each city's
+ordinances. `serializeOrchestrator`/`applyOrchestratorSnapshot` optionally
+carry the orchestrator's tick count and RNG state too, so automated
+growth timing/randomness resumes exactly where it left off rather than
+silently resetting.
+
+**Deliberate scope cut, stated plainly rather than discovered later**:
+resource/recipe registries are content/config, not save data - a load
+expects the caller to have already registered the same
+`DefaultResourceTypes`/`DefaultRecipes` on a *fresh* `RegionState` first,
+exactly like every dev preview already bootstraps a region. `CityHistory`
+and `AchievementTracker` are session-local observability, not part of
+`RegionState`, and are intentionally left running rather than reset - a
+loaded save keeps its recorded trend history and unlocked achievements,
+which is the behavior a player would actually want, not an oversight.
+`TownCharterTool`'s per-city growth weights also aren't part of
+`RegionState` today, so an `AUTOMATED` city's charter resets to the
+default on load - a known, documented gap, not a silent one.
+
+**Two real technical subtleties, solved rather than glossed over**:
+`Facility` and `Shipment` ids are auto-incremented from module-private
+counters (`_facilitySequence`, `_shipmentSequence`) - loading a save
+without accounting for this would let newly-created facilities/shipments
+collide with ones already in the save, since the counters restart at 0
+on a fresh page load. Fixed by exporting `setFacilitySequence(n)`/
+`setShipmentSequence(n)` (bump-only, never lowers the counter) and
+scanning every loaded id's numeric suffix to call them during
+`applyRegionSnapshot`. Second: `applyRegionSnapshot` refuses to run
+against an already-populated `RegionState` (any existing cities/
+corridors/shipments) rather than silently double-registering - loading
+is only ever meant to populate a genuinely fresh region.
+
+**Verified two ways.** Headlessly first: a real two-city ore→coal→steel
+trade chain, both control modes, ordinances toggled, a facility and a
+corridor disruption both active, run for 50 real ticks, then serialized,
+round-tripped through actual `JSON.stringify`/`JSON.parse` (not just an
+in-memory object clone - the real path a `localStorage` save takes), and
+restored into a completely fresh region. Every lot in both cities
+(terrain/zoneType/occupiedBy/resourceEndowment), every facility (status,
+stock, disruption state, and that the anchor lot's own `.facility`
+reference actually points at the *reconstructed* object, not just that
+counts matched), every corridor, every shipment (including that it kept
+its *original* id, not a fresh one), and every budget field matched
+exactly - 3581 individual assertions, all passing. Continued ticking the
+restored region for 60 more ticks confirmed no id collisions and that
+growth/trade genuinely kept happening (new facility and shipment ids
+appeared, none duplicating anything from the save).
+
+Then in an actual browser: a new `Hub_EngineSaveLoad.js` panel (SAVE/
+LOAD buttons, a status line) registered into `Hub_EngineStats` as an
+eighth panel, wired in `dev_engine_region_to_city.html` to serialize the
+live region to `localStorage` and, on load, rebuild region/orchestrator
+from scratch and re-enter the active city fresh (the same rebuild-per-
+entry approach already used for switching between different cities -
+View.js has no way to "patch" an existing scene onto a different
+`RegionState`). Playwright drove the real flow: save, then trigger a
+real Disaster (Supply Shock) and let the sim tick forward well past the
+save point, then load, and confirm the disruption was gone and
+`region.tick` had landed back at-or-just-after the actual saved tick
+(not the pre-load mutated one) - a genuine revert, not a no-op. Caught
+and fixed one real bug this way: the freshly-rebuilt `Hub_EngineStats`
+after a load has its own not-yet-opened `Hub_EngineSaveLoad` panel (lazy
+`init()`, same as every other panel), so writing a post-load status
+message into `.status.textContent` threw if the player hadn't reopened
+the panel yet by the time the async reload finished - fixed with a
+`.status` existence guard. Zero new console/page errors across the full
+save → mutate → load → verify sequence.
+
 ## What's still open
 
-- Save/load for `src/engine` (`RegionState`/`CityState` serialization) is
-  completely unbuilt - a separate workstream regardless of UI progress.
 - Shoreline blending, east/west and diagonal cases — round 3's
   structurally-derived hypothesis (`9,10=West`, `17,18=East`) is still
   unconfirmed, and the diagonal/secondary-edge-completion IDs are still

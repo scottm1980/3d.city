@@ -40,6 +40,8 @@ export { CityHistory } from './observability/CityHistory.js';
 export { evaluateCity } from './observability/CityEvaluation.js';
 export { AchievementTracker } from './observability/AchievementTracker.js';
 
+export { serializeRegion, applyRegionSnapshot, serializeOrchestrator, applyOrchestratorSnapshot } from './persistence/RegionSerializer.js';
+
 export { CargoVisual, CargoVisualRegistry, ModelVariant, visualForShipment } from './visuals/CargoVisual.js';
 export { DefaultCargoVisuals, DefaultCargoCategoryFallbacks, createDefaultCargoVisualRegistry } from './visuals/DefaultCargoVisuals.js';
 

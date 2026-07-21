@@ -7,6 +7,16 @@ export const ShipmentState = Object.freeze( {
 
 let _shipmentSequence = 0;
 
+// Called by persistence/RegionSerializer.js after loading a save, so
+// newly-created shipments post-load get ids past every id already in the
+// save rather than colliding with them (the counter otherwise restarts at
+// 0 on a fresh page load / fresh RegionState).
+export function setShipmentSequence ( n ) {
+
+    _shipmentSequence = Math.max( _shipmentSequence, n );
+
+}
+
 // A traceable cargo agent: the primitive that makes automated trade
 // observable instead of a black box (see COUNTRY_SIM_ENGINE_PLAN §Tier 1).
 export class Shipment {

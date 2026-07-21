@@ -4,6 +4,16 @@ import { TerrainType } from '../worldgen/Terrain.js';
 
 let _facilitySequence = 0;
 
+// Called by persistence/RegionSerializer.js after loading a save, so
+// newly-created facilities post-load get ids past every id already in the
+// save rather than colliding with them (the counter otherwise restarts at
+// 0 on a fresh page load / fresh RegionState).
+export function setFacilitySequence ( n ) {
+
+    _facilitySequence = Math.max( _facilitySequence, n );
+
+}
+
 // Set of resource ids placed by terrain (Tier 2) - these require a matching
 // lot endowment to resolve, unlike zone-inherent outputs (e.g. housing's
 // labor) that need no geological deposit to exist.

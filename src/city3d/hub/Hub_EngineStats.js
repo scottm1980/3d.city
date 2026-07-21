@@ -6,6 +6,7 @@ import { Hub_EngineOrdinances } from './Hub_EngineOrdinances.js';
 import { Hub_EngineAwards } from './Hub_EngineAwards.js';
 import { Hub_EngineHistory } from './Hub_EngineHistory.js';
 import { Hub_EngineDisaster } from './Hub_EngineDisaster.js';
+import { Hub_EngineSaveLoad } from './Hub_EngineSaveLoad.js';
 
 //------------------------------------------------------//
 //         ENGINE-NATIVE STATS PANEL (src/engine)        //
@@ -70,9 +71,10 @@ export class Hub_EngineStats {
 			Awards: new Hub_EngineAwards( hub ),
 			History: new Hub_EngineHistory( hub ),
 			Disaster: new Hub_EngineDisaster( hub ),
+			Files: new Hub_EngineSaveLoad( hub ),
 		};
 
-		const icons = { Budget: '\u{1F4B0}', Economy: '\u{1F3ED}', Eval: '\u{1F4CA}', Ordinances: '⚖️', Awards: '\u{1F3C6}', History: '\u{1F4DC}', Disaster: '⚠️' };
+		const icons = { Budget: '\u{1F4B0}', Economy: '\u{1F3ED}', Eval: '\u{1F4CA}', Ordinances: '⚖️', Awards: '\u{1F3C6}', History: '\u{1F4DC}', Disaster: '⚠️', Files: '\u{1F4BE}' };
 
 		const buttonBar = document.createElement( 'div' );
 		buttonBar.style.cssText = 'display:flex; gap:4px; margin-top:8px; pointer-events:auto;';
