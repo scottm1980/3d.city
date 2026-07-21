@@ -837,13 +837,67 @@ persistent math error. Not chased further since it demonstrably doesn't
 affect the final rendered or geometric state; flagged here rather than
 silently ignored.
 
+## Shoreline blending, round 4: shipped what's confirmed, deferred what isn't
+
+Round 3 closed with two confirmed IDs (`13,14=North`, `5,6=South`) and a
+note that implementing "would produce a visibly broken result for every
+other coastline angle - worse than the current plain-edge fallback." That
+was wrong on reflection: falling back to the existing plain
+`TILE_GROUND`/`TILE_WATER` behavior for every neighbor pattern *except*
+the two confirmed ones is strictly additive, never worse than the
+current baseline. `dev_engine_shoreline.html` (new) ships exactly that -
+real, working shoreline blending scoped to only what's confirmed, with
+zero risk of using a wrong guessed ID:
+
+- A lot with a water neighbor directly to its north gets tile value `13`
+  (the confirmed North-facing shore tile); directly to its south gets
+  `5` (South-facing). Every other case - water to the east, west,
+  diagonal, or no water neighbor at all - renders exactly as every prior
+  preview already did (plain ground). East/west/diagonal blending stays
+  unimplemented, honestly, rather than guessed.
+- `?blend=0` disables the feature entirely (same map, same camera target
+  lot) purely to allow a controlled before/after comparison - not part
+  of the feature itself.
+
+**Verified two ways, and the second is more rigorous than the first.**
+Screenshots at a close, near-top-down camera angle on a real shoreline
+segment (same target lot, with and without blending) looked nearly
+identical to the eye - the height difference involved (0.2 world units)
+turned out to be too subtle to distinguish visually at this software-
+rendering fidelity, the same fundamental limitation every round of this
+investigation has hit. Rather than call that inconclusive result either
+a pass or a fail, verification went past pixels into the actual mesh
+data: reading `AppState.view3d.heightData` directly (via
+`findHeightId()`, the same accessor `View.js` itself uses) at five
+sampled north-facing shore tiles and five south-facing ones. Every
+north-facing sample had both relevant vertices at exactly `-0.2`
+(`-AppState.heightBorder`, lowered toward water) and every south-facing
+sample had both at exactly `+0.2` (raised to land height) - precisely
+what reading `View.js`'s own height-deformation code predicted in round
+3, now confirmed empirically rather than just reasoned about. Five
+interior-land control samples (no water neighbor) showed ordinary
+varying noise-based heights (0.65 down to 0.46), confirming the
+shoreline-tagged samples' suspiciously-exact `±0.2` values aren't a
+coincidence of the base terrain. A tile-count regression check confirmed
+the change is purely a reclassification, not a loss: `blend=0`'s 8133
+plain-ground tiles exactly equal `blend=1`'s 8094 ground + 26 shoreNorth
++ 13 shoreSouth. Zero JS/console errors in either mode.
+
+This is real, shippable, verified shoreline blending - just an honestly
+partial one. East/west and diagonal coastlines still render as plain
+hard edges, exactly as they did before this round; only north/south
+ones are new. `dev_engine_view3d.html`'s and other previews' terrain
+generation could adopt this same tile-value logic later without risk,
+since it degrades to their existing behavior everywhere it doesn't
+apply.
+
 ## What's still open
 
-- Shoreline blending — see round 3 above. Two values confirmed from
-  source comments, two more hypothesized but unconfirmed, the rest
-  (diagonals, secondary edge-completion tiles) still fully open. Needs
-  either a richer multi-tile test map, the texture-readback approach, or
-  a non-software-rendered environment to make further progress.
+- Shoreline blending, east/west and diagonal cases — round 3's
+  structurally-derived hypothesis (`9,10=West`, `17,18=East`) is still
+  unconfirmed, and the diagonal/secondary-edge-completion IDs are still
+  fully open. Needs either a richer multi-tile test map, the texture-
+  readback approach, or a non-software-rendered environment.
 - The transient water-plane NaN warning noted above - understood to be
   harmless, not root-caused to an exact line.
 - `View.js` still has no `dispose()`/teardown path - fine for the

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine shoreline preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+<link type="text/css" rel="stylesheet" href="index.css">
+</head>
+<style>
+#status { position:absolute; left:10px; top:10px; z-index:10; font:12px monospace; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; max-width:90%; }
+</style>
+<script type="module">
+	// Ninth dev preview: shoreline blending, scoped to what round 3's
+	// research in RENDERER_INTEGRATION_FINDINGS.md actually confirmed
+	// rather than what it hypothesized. Two water-border tile IDs have
+	// directional meaning confirmed directly from a source comment in
+	// Base.js's Zone() function (not the avoided GPL riverEdge[16]
+	// table): 13/14 = North (water to this land tile's north), 5/6 =
+	// South. This preview uses ONLY those two, real and unguessed - every
+	// other neighbor pattern (water to the east, west, or diagonal) falls
+	// back to the existing plain TILE_GROUND/TILE_WATER behavior, exactly
+	// what every prior preview already did. That makes this a strictly
+	// additive improvement: north/south coastlines genuinely blend now,
+	// and every other coastline angle is no worse than before - never a
+	// guessed ID risking a visibly wrong shape.
+	import { View } from './src/city3d/View.js';
+	import { Hub } from './src/city3d/Hub.js';
+	import { AppState } from './src/AppState.js';
+
+	import { CityState, ControlMode } from './src/engine/world/CityState.js';
+	import { CityMapGenerator } from './src/engine/worldgen/CityMapGenerator.js';
+	import { TerrainType } from './src/engine/worldgen/Terrain.js';
+
+	const TILE_WATER = 2;
+	const TILE_GROUND = 0;
+	const TILE_TREE_BASE = 21;
+	const TILE_SHORE_NORTH = 13; // confirmed via Base.js Zone()'s `// N` comment - water to this tile's north
+	const TILE_SHORE_SOUTH = 5;  // confirmed via Base.js Zone()'s `// S` comment - water to this tile's south
+
+	function status ( text ) { document.getElementById( 'status' ).textContent = text; }
+	function treeVariant ( lot ) { return TILE_TREE_BASE + ( ( lot.x * 7 + lot.y * 13 ) % 8 ); }
+
+	// ?blend=0 disables shoreline blending (falls back to every prior
+	// preview's plain-edge behavior) so the same map/camera position can
+	// be compared before/after - not part of the feature itself, just a
+	// way to prove the improvement is real rather than coincidental.
+	const BLEND_ENABLED = new URLSearchParams( location.search ).get( 'blend' ) !== '0';
+
+	function buildTilesData ( city ) {
+
+		const data = new Float32Array( city.width * city.height );
+		const counts = { water: 0, tree: 0, ground: 0, shoreNorth: 0, shoreSouth: 0 };
+
+		for ( const lot of city.lots ) {
+
+			const n = lot.x + lot.y * city.width;
+
+			if ( lot.terrain === TerrainType.WATER ) { data[ n ] = TILE_WATER; counts.water ++; continue; }
+			if ( lot.terrain === TerrainType.FOREST ) { data[ n ] = treeVariant( lot ); counts.tree ++; continue; }
+
+			// Shoreline check: only the immediate N/S neighbor, only the
+			// two confirmed IDs. If a lot has water on BOTH sides (a
+			// narrow isthmus), north wins arbitrarily - neither confirmed
+			// ID is built to handle that case alone, and this is rare.
+			const north = BLEND_ENABLED ? city.lotAt( lot.x, lot.y - 1 ) : null;
+			const south = BLEND_ENABLED ? city.lotAt( lot.x, lot.y + 1 ) : null;
+
+			if ( north && north.terrain === TerrainType.WATER ) { data[ n ] = TILE_SHORE_NORTH; counts.shoreNorth ++; }
+			else if ( south && south.terrain === TerrainType.WATER ) { data[ n ] = TILE_SHORE_SOUTH; counts.shoreSouth ++; }
+			else { data[ n ] = TILE_GROUND; counts.ground ++; }
+
+		}
+
+		return { data, counts };
+
+	}
+
+	async function run () {
+
+		try {
+
+			status( 'generating city...' );
+			const size = 96;
+			const city = new CityState( 'preview', 'Preview', { width: size, height: size, controlMode: ControlMode.MANAGED } );
+			new CityMapGenerator( 1 ).generate( city );
+
+			const { data: tilesData, counts } = buildTilesData( city );
+
+			status( 'constructing real View/Hub (no Worker, no CityGame.js)...' );
+			AppState.hub = new Hub();
+			AppState.view3d = new View();
+			AppState.main = { start () {} };
+
+			status( 'initRenderer()...' );
+			await AppState.view3d.initRenderer();
+
+			status( 'paintMap() with shoreline-blended tilesData...' );
+			AppState.tilesData = tilesData;
+			AppState.view3d.paintMap( [ size, size ], false );
+			AppState.view3d.clearIntro();
+			AppState.hub.start();
+
+			// Aim the camera at a real shoreline segment rather than a
+			// random overview, so a screenshot actually shows blended
+			// edges close enough to judge, not a distant blur.
+			let target = null;
+			outer:
+			for ( const lot of city.lots ) {
+				const north = city.lotAt( lot.x, lot.y - 1 );
+				if ( north && north.terrain === TerrainType.WATER && lot.terrain !== TerrainType.WATER ) { target = lot; break outer; }
+			}
+
+			if ( target ) {
+				AppState.view3d.center.x = target.x;
+				AppState.view3d.center.z = target.y;
+				AppState.view3d.cam.vertical = 18;
+				AppState.view3d.cam.distance = 22;
+				AppState.view3d.moveCamera();
+			}
+
+			status( 'done' );
+			window.__engineShorelineReady = {
+				ok: true,
+				size,
+				blendEnabled: BLEND_ENABLED,
+				counts,
+				targetLot: target ? { x: target.x, y: target.y } : null,
+			};
+
+		} catch ( err ) {
+
+			status( 'ERROR: ' + err.message );
+			window.__engineShorelineReady = { ok: false, error: err.message, stack: err.stack };
+			console.error( err );
+
+		}
+
+	}
+
+	run();
+
+</script>
+
+<div id="container"></div>
+<div id="hub"></div>
+<div id="status">starting...</div>
+
+</body></html>
