@@ -757,6 +757,86 @@ still isn't shippable, but the next attempt has real source-derived
 ground truth for 2 of 16 values and a concrete hypothesis for 2 more,
 instead of starting from zero.
 
+## A real multi-city architecture: region view + click-to-enter city, no View.js changes
+
+This item had been listed as open since the vehicles-preview milestone,
+framed as "`View.js` would need real changes." That framing turned out
+to be wrong: `View.js` doesn't need to change at all. `dev_engine_region_3d.html`
+already proved a real multi-city region overview (cities as nodes,
+corridors as lines, many concurrent vehicles) as its own standalone
+Three.js scene, and every `View.js`-driving preview since
+`dev_engine_view3d.html` has proven `View.js` is a solid single-city
+renderer. `dev_engine_region_to_city.html` (new) composes the two
+instead of merging them: a real region overview (`RegionMapGenerator` +
+`RegionOrchestrator`, 6 real cities) you can click into, entering a real
+`View.js` close-up of exactly that city's own `CityState` - its own
+terrain, its own buildings, the real Hub UI (`Hub_Build`) for
+zoning/demolishing it if it's `MANAGED` - with a button back out to the
+region view. The region-wide simulation keeps ticking the whole time,
+whichever view is showing, matching the design's "lighter automated
+oversight for satellite towns" intent - cities you're not looking at
+keep growing on their own.
+
+Because `View.js` has no `dispose()`/multi-instance-switch support, this
+preview rebuilds a fresh `View`/`Hub` on every city entry rather than
+trying to reuse one across different cities - `#container`/`#hub` are
+cleared and a brand new `View()`/`Hub()` constructed each time. That's an
+honest, documented limitation, not a hidden one: WebGL resources from
+earlier city visits aren't explicitly released (no `dispose()` exists to
+call), only their DOM/JS references dropped, so a very long session
+hopping between many different cities could eventually approach a
+browser's concurrent-WebGL-context limit. Fine for proving the
+architecture works; a real cutover would need `View.js` to grow an actual
+teardown path.
+
+Two real bugs caught and fixed via browser testing, not code review:
+
+1. **A race between the background simulation tick and async city
+   entry.** `enterCity()` is `async` (it awaits `initRenderer()`), and
+   the region-wide `setInterval` tick kept running the whole time. Flipping
+   `mode`/`activeCityId` to `'city'` *before* that `await` meant a tick
+   landing mid-await called `AppState.view3d.selectTool()` on a `View`
+   instance whose `this.tool` didn't exist yet - throwing on every such
+   tick. Fixed by only flipping `mode`/`activeCityId` *after*
+   `initRenderer()` resolves, closing the window entirely rather than
+   guarding against it. A second, related edge case (rapid clicks into
+   two different cities before the first finish loading) is closed with
+   a simple `entering` re-entrancy flag.
+2. **A DOM-visibility/sizing order bug**, separate from the race above:
+   `#container`/`#hub` need to be visible (non-`display:none`, real
+   layout size) *before* `initRenderer()` runs, not after - showing them
+   only once loading finishes doesn't retroactively fix anything
+   `initRenderer()` already computed off the container's dimensions at
+   call time. Getting this backwards was the direct cause of a
+   transient-but-real symptom (see below).
+
+Verified via Playwright: zero `pageerror`s (no exceptions) across
+entering a city, leaving, and entering a *different* city (the real test
+of "switching," not just entering once) - `DOM visibility` checks
+confirmed the region canvas and `#container`/`#hub` never both show at
+once in either direction, and the real `View.js` scene
+(`view3d.land.children`, `view3d.buildingLists`) was inspected directly
+in both cities entered, not just screenshotted.
+
+**One remaining, understood-but-unresolved cosmetic finding**: entering
+a city logs six `THREE.BufferGeometry.computeBoundingBox()`/
+`computeBoundingSphere()` "NaN" console warnings (not exceptions) during
+setup - traced to the water plane specifically, and confirmed harmless
+by direct inspection: `AppState.view3d.water.geometry`'s position
+attribute has zero actual NaN values and a correct, expected bounding
+box (`[-0.5,-0.5]` to `[39.5,39.5]` for a 40×40 city) once entry
+finishes - and the rendered screenshot shows a normal, correctly-shaped
+lake with no visual artifact. This city's terrain (real
+`RegionMapGenerator`-generated, unlike earlier previews' hand-placed
+terrain) happens to have water touching the map boundary (12 of 145
+water tiles), which is the leading suspect given `View.js`'s water-plane
+setup has boundary-specific special cases - but the warning is
+transient (gone by the time the geometry is inspected a second later),
+so this reads as an early-frame ordering quirk during setup, not a
+persistent math error. Not chased further since it demonstrably doesn't
+affect the final rendered or geometric state; flagged here rather than
+silently ignored.
+
 ## What's still open
 
 - Shoreline blending — see round 3 above. Two values confirmed from
@@ -764,10 +844,12 @@ instead of starting from zero.
   (diagonals, secondary edge-completion tiles) still fully open. Needs
   either a richer multi-tile test map, the texture-readback approach, or
   a non-software-rendered environment to make further progress.
-- A real multi-city architecture in `View.js` itself (this pass used a
-  combined-tilesData trick specifically to avoid refactoring `View.js`;
-  a genuine region view with independently-sized, independently-loaded
-  cities would need real changes there).
+- The transient water-plane NaN warning noted above - understood to be
+  harmless, not root-caused to an exact line.
+- `View.js` still has no `dispose()`/teardown path - fine for the
+  rebuild-per-entry approach `dev_engine_region_to_city.html` uses, but
+  a real multi-city cutover would want one, to avoid the WebGL-context
+  accumulation noted above over a long session.
 - Only 3 of the real UI's ~13 tools (R/C/I) are wired to `src/engine`;
   road/power/service tools are accepted but no-op, since the engine
   doesn't model infrastructure/services yet.
