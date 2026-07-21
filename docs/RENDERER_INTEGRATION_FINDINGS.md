@@ -976,13 +976,90 @@ three categories and matched precisely. Zero new JS/console errors beyond
 the already-documented, already-confirmed-harmless transient water-plane
 NaN warning.
 
+## Hub redesign, step 2: real Budget + Economy panels, honest placeholders for the rest
+
+Completed the rest of Strategy C's panel set. Given the choice between
+building only what has real engine backing versus building every panel
+button a player coming from the real game's UI would expect to find (even
+where `src/engine` has nothing to back it), the latter was chosen -
+better an honest "not modeled yet" than a silently missing button.
+
+**Two panels have real engine backing, not fabricated numbers:**
+
+- **`Hub_EngineBudget.js`** - treasury, this city's allocation, and a
+  spend-by-facility-type breakdown read directly from
+  `CityBudget.spend` (the exact `Map` `ZoneResolver.developLot()` already
+  writes via `spendOn()` - not synthesized for this panel, the real
+  bookkeeping).
+- **`Hub_EngineEconomy.js`** - the original `Hub_Economy.js` picks a
+  city's "industry specialization," which `src/engine` has no concept
+  of, but `TownCharterTool`'s per-city residential/commercial/industrial
+  growth weights (`DefaultTownCharter`) map onto the same idea and
+  already drive automated growth every tick. The sliders here write
+  directly into the same charter object `RegionOrchestrator`'s
+  `charterFor(city)` callback returns - moving them for real changes
+  what that city builds next, not a display-only mock. `MANAGED` cities
+  show a plain message instead of sliders that would do nothing, since
+  the player already controls their zoning directly.
+
+**Five honest placeholders** (`Hub_EnginePlaceholder.js`, one reusable
+class parameterized by title/message) stand in for `Eval`/`Ordinances`/
+`Awards`/`History`/`Disaster` - each says plainly that the mechanic
+(crime/pollution/happiness census, ordinances, achievements, historical
+trends, disasters) isn't modeled in `src/engine`, rather than fabricating
+numbers or omitting the button entirely.
+
+**Two real bugs caught via browser testing, not code review, while wiring
+this in:**
+
+1. **A second, distinct city-switching race**, different from the one
+   the multi-city milestone already fixed. That fix closed the window
+   during `initRenderer()`'s `await`; this one opened when switching from
+   an *already-active* city straight to a different one (not just the
+   first-ever entry): `activeCityId` stayed pointing at the old city
+   while `AppState.view3d` was about to be reassigned to a fresh,
+   not-yet-initialized instance a few lines later. If the background
+   `tickSim()` interval landed in that window, its `mode==='city' &&
+   activeCityId` guard still passed (both were still set from the
+   previous city), so it called `syncCityBuildings()` →
+   `view3d.selectTool()` against the *new* `View` before `initRenderer()`
+   had created its `tool` object - throwing every time, reliably
+   reproduced by a Playwright test that switched between two different
+   cities and clicked through several panels. Fixed by clearing
+   `activeCityId` immediately at the start of `enterCity()`, not only
+   after the later `await` - closing the whole transition window, not
+   just part of it.
+2. **A stale-until-next-tick display bug**: both new panels only
+   refreshed their displayed values while `state==='open'`, so opening a
+   panel showed blank/stale content until whatever *external* tick loop
+   happened to call `update()` next - occasionally a genuinely noticeable
+   beat under this environment's slow software rendering, and a real
+   (if smaller) rough edge on real hardware too. Fixed two ways: the
+   panels now update regardless of open/closed state (gated only on
+   `init()` having run at all, not on visibility), and `Hub_EngineStats`
+   gained an `onPanelOpen` hook that the driving preview wires to force
+   an immediate refresh the moment any panel opens - so a just-opened
+   panel is never stale, not even for one tick.
+
+Verified via Playwright: a `MANAGED` city's Economy panel shows the
+plain message (not sliders); an `AUTOMATED` city's shows three real
+sliders, and dragging one via a dispatched `input` event changed the
+underlying charter object's value and - critically - that value survived
+a subsequent tick rather than snapping back, confirming the orchestrator
+reads the same live object the slider writes; the Budget panel's actual
+rendered text showed real dollar amounts per facility archetype
+immediately upon opening; a placeholder panel's rendered text matched
+its honest message exactly; and opening one panel correctly closed
+whichever other panel was open (the same mutual-exclusivity behavior
+`Hub_Top.closePannel()` has). Zero page errors after both fixes, across
+entering a `MANAGED` city, an `AUTOMATED` city, dragging a slider, and
+opening all four tested panels in sequence - only the already-documented,
+confirmed-harmless transient water-plane NaN warnings remained.
+
 ## What's still open
 
-- The rest of Strategy C: `Hub_Budget`/`Hub_Eval`/`Hub_Economy`/
-  `Hub_Ordinances`/`Hub_Awards`/`Hub_History`/`Hub_Disaster` still have no
-  engine-native replacement - `Hub_EngineStats` covers only the top-bar-
-  equivalent stats. Save/load for `src/engine` (`RegionState`/`CityState`
-  serialization) is completely unbuilt.
+- Save/load for `src/engine` (`RegionState`/`CityState` serialization) is
+  completely unbuilt - a separate workstream regardless of UI progress.
 - Shoreline blending, east/west and diagonal cases — round 3's
   structurally-derived hypothesis (`9,10=West`, `17,18=East`) is still
   unconfirmed, and the diagonal/secondary-edge-completion IDs are still

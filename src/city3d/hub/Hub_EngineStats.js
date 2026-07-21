@@ -1,4 +1,7 @@
 import { AppState } from '../../AppState.js'
+import { Hub_EngineBudget } from './Hub_EngineBudget.js';
+import { Hub_EngineEconomy } from './Hub_EngineEconomy.js';
+import { Hub_EnginePlaceholder } from './Hub_EnginePlaceholder.js';
 
 //------------------------------------------------------//
 //         ENGINE-NATIVE STATS PANEL (src/engine)        //
@@ -37,6 +40,57 @@ export class Hub_EngineStats {
 		this.allocation = this._row( 'City funds', '' );
 		this.facilities = this._row( 'Facilities', '' );
 		this.trade = this._row( 'Trade', '' );
+
+		this._initPanelRegistry( hub );
+
+	}
+
+	// Mirrors Hub_Top.initPannel()'s exact pattern (a pannels registry +
+	// one button per panel, closing every other panel before opening the
+	// clicked one) - real, working popups, not just a stats readout. Two
+	// panels have real engine backing (Budget, Economy); the rest are
+	// honest placeholders for mechanics src/engine doesn't model (see the
+	// cutover-research findings) rather than silently missing buttons a
+	// player coming from the real game's UI would expect to find.
+	_initPanelRegistry ( hub ) {
+
+		this.pannels = {
+			Budget: new Hub_EngineBudget( hub, 'Budget' ),
+			Economy: new Hub_EngineEconomy( hub, 'Economy' ),
+			Eval: new Hub_EnginePlaceholder( hub, 'Evaluation', 'Crime, pollution, traffic, health, and happiness aren’t modeled in src/engine yet — it’s a resource/trade-gated country sim, not a Micropolis-style census sim.', true ),
+			Ordinances: new Hub_EnginePlaceholder( hub, 'Ordinances', 'City ordinances aren’t modeled in src/engine yet.', true ),
+			Awards: new Hub_EnginePlaceholder( hub, 'Awards', 'Achievements aren’t modeled in src/engine yet.', true ),
+			History: new Hub_EnginePlaceholder( hub, 'History', 'Historical trend charts aren’t modeled in src/engine yet.', true ),
+			Disaster: new Hub_EnginePlaceholder( hub, 'Disaster', 'Disasters aren’t modeled in src/engine yet.', true ),
+		};
+
+		const icons = { Budget: '\u{1F4B0}', Economy: '\u{1F3ED}', Eval: '\u{1F4CA}', Ordinances: '⚖️', Awards: '\u{1F3C6}', History: '\u{1F4DC}', Disaster: '⚠️' };
+
+		const buttonBar = document.createElement( 'div' );
+		buttonBar.style.cssText = 'display:flex; gap:4px; margin-top:8px; pointer-events:auto;';
+		this.inner.appendChild( buttonBar );
+
+		for ( const name in this.pannels ) {
+
+			const button = hub.addButton( buttonBar, icons[ name ] || name, [ 0, 30, 16 ], '', true );
+			button.title = name;
+			button.addEventListener( 'click', ( e ) => {
+
+				e.preventDefault();
+				for ( const other in this.pannels ) if ( other !== name ) this.pannels[ other ].close();
+				this.pannels[ name ].open();
+				// A just-opened panel would otherwise show stale/blank
+				// content until whatever external tick loop next calls
+				// update() - which on a slow render (this environment's
+				// software rendering, or a real player pausing on a slow
+				// tick) could be a genuinely noticeable beat.
+				// this.onPanelOpen is set by whoever constructs this
+				// instance to refresh all panels immediately on open.
+				if ( this.onPanelOpen ) this.onPanelOpen();
+
+			}, false );
+
+		}
 
 	}
 

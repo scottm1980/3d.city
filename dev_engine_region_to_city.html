@@ -52,6 +52,7 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 	import { TerrainType } from './src/engine/worldgen/Terrain.js';
 	import { availableResourceIds } from './src/engine/trade/TradeResolver.js';
 	import { developLot } from './src/engine/resolution/ZoneResolver.js';
+	import { DefaultTownCharter } from './src/engine/tools/TownCharterTool.js';
 
 	const TILE_WATER = 2;
 	const TILE_GROUND = 0;
@@ -320,6 +321,7 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 	let currentPlayerToolId = 0;
 	let playerActionStatus = '';
 	let engineStatsPanel = null;
+	const cityCharters = new Map(); // cityId -> mutable TownCharter, one per AUTOMATED city
 
 	function updateEngineStatsPanel ( city ) {
 
@@ -349,14 +351,27 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 
 		}
 
+		const controlMode = city.controlMode === ControlMode.MANAGED ? 'MANAGED' : 'AUTOMATED';
+
 		engineStatsPanel.update( {
 			title: `${ city.name } (${ region.name })`,
-			controlMode: city.controlMode === ControlMode.MANAGED ? 'MANAGED' : 'AUTOMATED',
+			controlMode,
 			treasury: region.nationalBudget.treasury,
 			cityAllocation: city.budget ? city.budget.allocation : null,
 			facilityCounts: { residential, commercial, industrial },
 			activeShipments,
 			shipmentsDelivered,
+		} );
+
+		engineStatsPanel.pannels.Budget.update( {
+			treasury: region.nationalBudget.treasury,
+			cityAllocation: city.budget ? city.budget.allocation : null,
+			spend: city.budget ? city.budget.spend : null,
+		} );
+
+		engineStatsPanel.pannels.Economy.update( {
+			controlMode,
+			charter: cityCharters.get( city.id ) || null,
 		} );
 
 	}
@@ -436,6 +451,20 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 		if ( ! city ) return;
 		entering = true;
 
+		// A second real race, distinct from the initRenderer() one below:
+		// switching from an ALREADY-active city straight to a different
+		// one (not just the first-ever entry) leaves activeCityId
+		// pointing at the OLD city while AppState.view3d is about to be
+		// reassigned to a fresh, not-yet-initialized instance a few lines
+		// down. If tickSim()'s interval lands in that window, its
+		// mode==='city' && activeCityId guard still passes (both are
+		// still set from the previous city), so it calls
+		// syncCityBuildings() -> view3d.selectTool() against the NEW
+		// View before initRenderer() has created its `tool` object -
+		// throwing every time. Clearing activeCityId immediately closes
+		// this window too, not just the later initRenderer() await.
+		activeCityId = null;
+
 		regionAnimating = false;
 		document.getElementById( 'regionCanvasHost' ).style.display = 'none';
 		document.getElementById( 'backButton' ).style.display = 'block';
@@ -506,6 +535,7 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 
 		document.getElementById( 'status' ).style.display = 'none';
 		engineStatsPanel = new Hub_EngineStats( AppState.hub );
+		engineStatsPanel.onPanelOpen = () => updateEngineStatsPanel( city );
 		updateEngineStatsPanel( city );
 
 		const built = syncCityBuildings( city );
@@ -594,7 +624,22 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 				citySize: { width: 40, height: 40 },
 			} ).generate( region );
 
-			orchestrator = new RegionOrchestrator( region, { seed: 1, automatedTickInterval: 2, maxLotsPerAutomatedTick: 4 } );
+			// Each AUTOMATED city gets its own mutable copy of the default
+			// charter (DefaultTownCharter itself is frozen) - this is the
+			// real object the Economy panel's sliders write into, and the
+			// exact object charterFor(city) hands back to the
+			// orchestrator every automated-growth tick. Not a display
+			// copy of a lever that does nothing - the actual lever.
+			for ( const city of region.cities.values() ) {
+				if ( city.controlMode === ControlMode.AUTOMATED ) cityCharters.set( city.id, { ...DefaultTownCharter } );
+			}
+
+			orchestrator = new RegionOrchestrator( region, {
+				seed: 1,
+				automatedTickInterval: 2,
+				maxLotsPerAutomatedTick: 4,
+				charterFor: city => cityCharters.get( city.id ) || DefaultTownCharter,
+			} );
 			cargoRegistry = createDefaultCargoVisualRegistry();
 
 			// Managed cities need player zoning to grow (that's the whole
