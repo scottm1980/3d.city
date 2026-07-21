@@ -891,8 +891,98 @@ generation could adopt this same tile-value logic later without risk,
 since it degrades to their existing behavior everywhere it doesn't
 apply.
 
+## Cutover research: what replacing `CityGame.js` for real actually requires
+
+Before writing more integration code, a dedicated research pass traced
+the shipping game's actual boot path end to end (`index.html` →
+`Main.init()` → `WorkerBridge.boot()` → the real Worker running
+`src/micro/CityGame.js`) to find every place the current Hub UI and
+render path assume the GPL Worker protocol's specific shapes. The
+finding changes the shape of what's left more than expected, so it's
+recorded here in full rather than folded into a to-do bullet.
+
+**The plumbing is not the hard part.** Driving `View.js` from
+`src/engine` state (terrain, buildings, camera, tools) has been proven
+repeatedly by every preview this session, and the multi-city + budget +
+demolition work already goes well beyond what a real cutover's render
+path would need.
+
+**The Hub UI is the hard part, and it's a different game's dashboard.**
+`Hub_Budget.js` expects tax rates, per-service funding percentages
+(road/fire/police/water/education), and municipal bonds. `Hub_Eval.js`
+expects crime, pollution, traffic, health, happiness, education,
+unemployment, and a city evaluation score. `Hub_Top.js` expects
+population, an RCI demand "valve," a city class, and a season. All of it
+comes from a 25-element `infos` array `Simulation.js` builds every tick
+and a matching `getData('budget'|'eval'|...)` shape `CityGame.js`
+computes on request. `src/engine` has **none of this** - not as a gap to
+fill in, but because it's a deliberately different game (resource/trade-
+gated country sim, not a Micropolis-style census/tax/bond city sim). Save/
+load is also completely unbuilt in `src/engine` - a separate, fully
+unstarted workstream regardless of approach.
+
+**Three candidate strategies were scoped**: (A) keep the Worker/message
+protocol, reimplement `CityGame.js`'s internals against `src/engine`, and
+synthesize every Micropolis stat on top of an engine that models none of
+them; (B) bypass the Worker entirely and drive `src/engine` synchronously
+on the main thread (productizing what every preview already does), still
+needing a stats-layer decision; (C) keep (or drop) the Worker for
+placement/render, but **replace the Hub panels themselves** with ones
+that reflect what `src/engine` actually models, rather than faking a
+foreign simulation's numbers.
+
+**Decision: Strategy C.** Faking population/crime/pollution/bonds on top
+of a simulation that doesn't model any of them would mean building a
+shadow mini-Micropolis just to keep old panels from showing zeroes - the
+worse of the three options. Redesigning the Hub around the real model is
+more UI churn but is honest, and doesn't risk the "different game wearing
+a borrowed dashboard" problem.
+
+## Hub redesign, step 1: `Hub_EngineStats`, a real panel for what `src/engine` actually models
+
+The first concrete step on Strategy C, and deliberately scoped to be
+additive-only: `src/city3d/hub/Hub_EngineStats.js` is a **new** Hub panel
+file, structurally alongside `Hub_Top.js`/`Hub_Budget.js`, but it does
+not touch or replace them in place. Those files are still what the
+shipping game displays today (`src/micro`/`CityGame.js` is still the
+live simulation behind `index.html`) - editing them in place would change
+what the currently-shipping game shows before `src/engine` is actually
+driving it. Instead, `dev_engine_region_to_city.html` (the most complete
+preview) constructs `Hub_EngineStats` alongside the existing
+`Hub_Build`/`Hub_Top` (via `initGameHub()`, unchanged), then hides
+`Hub_Top`'s now-meaningless docked panels (`content0`/`content`/`content2`
+- never fed data here since there's no population/score/happiness to
+feed them) by toggling DOM elements this preview already holds a
+reference to - `Hub_Top.js` itself is never modified.
+
+The new panel shows what the engine actually has: city name + region,
+control mode (`MANAGED`/`AUTOMATED`, colored), national treasury, this
+city's allocation, R/C/I facility counts, and shipments in transit/
+delivered touching this city - reusing the game's real `--c-*`/`--font-ui`
+CSS custom properties so it reads as part of the same UI language, not a
+bolted-on debug overlay. `Hub_Build`'s RCI bar (`updateRCI(r,c,i)`) turned
+out to already be genuinely engine-agnostic - three raw counts, no
+Micropolis-specific assumption baked in - so it's reused as-is rather
+than rebuilt, the one piece of the existing Hub that needed no redesign
+at all.
+
+Verified via Playwright: the actual rendered DOM text (not just internal
+state) was checked to contain the city's name, its control mode, and its
+facility-count string, confirming the panel really displays computed
+values, not just that `update()` was called with plausible-looking
+arguments. The reused RCI bar's rendered `style.width` values were
+checked against the exact expected formula (`count * 0.033px`) for all
+three categories and matched precisely. Zero new JS/console errors beyond
+the already-documented, already-confirmed-harmless transient water-plane
+NaN warning.
+
 ## What's still open
 
+- The rest of Strategy C: `Hub_Budget`/`Hub_Eval`/`Hub_Economy`/
+  `Hub_Ordinances`/`Hub_Awards`/`Hub_History`/`Hub_Disaster` still have no
+  engine-native replacement - `Hub_EngineStats` covers only the top-bar-
+  equivalent stats. Save/load for `src/engine` (`RegionState`/`CityState`
+  serialization) is completely unbuilt.
 - Shoreline blending, east/west and diagonal cases — round 3's
   structurally-derived hypothesis (`9,10=West`, `17,18=East`) is still
   unconfirmed, and the diagonal/secondary-edge-completion IDs are still

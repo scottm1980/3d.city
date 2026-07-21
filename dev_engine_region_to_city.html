@@ -34,6 +34,7 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 	// Still never calls Main.init()/boots a Worker/loads GPL CityGame.js.
 	import { View } from './src/city3d/View.js';
 	import { Hub } from './src/city3d/Hub.js';
+	import { Hub_EngineStats } from './src/city3d/hub/Hub_EngineStats.js';
 	import { AppState } from './src/AppState.js';
 	import * as THREE from './src/three/three.module.js';
 	import { OrbitControls } from './src/jsm/controls/OrbitControls.js';
@@ -318,6 +319,47 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 	const renderedFacilityIdsByCity = new Map(); // cityId -> Set<facilityId>, so re-entering the same city doesn't re-render what's already there
 	let currentPlayerToolId = 0;
 	let playerActionStatus = '';
+	let engineStatsPanel = null;
+
+	function updateEngineStatsPanel ( city ) {
+
+		if ( ! engineStatsPanel ) return;
+
+		let residential = 0, commercial = 0, industrial = 0;
+		for ( const facility of city.facilities.values() ) {
+
+			// facility.lot.zoneType is the authoritative R/C/I classification -
+			// not inferred from archetype id, which would silently drift as
+			// DefaultRecipes.js content changes.
+			if ( facility.lot.zoneType === ZoneType.RESIDENTIAL ) residential ++;
+			else if ( facility.lot.zoneType === ZoneType.COMMERCIAL ) commercial ++;
+			else if ( facility.lot.zoneType === ZoneType.INDUSTRIAL ) industrial ++;
+
+		}
+
+		let activeShipments = 0, shipmentsDelivered = 0;
+		for ( const shipment of region.shipments.values() ) {
+
+			const originInCity = city.facilities.has( shipment.originFacilityId );
+			const destInCity = city.facilities.has( shipment.destinationFacilityId );
+			if ( ! originInCity && ! destInCity ) continue;
+
+			if ( shipment.state === ShipmentState.IN_TRANSIT ) activeShipments ++;
+			else if ( shipment.state === ShipmentState.DELIVERED ) shipmentsDelivered ++;
+
+		}
+
+		engineStatsPanel.update( {
+			title: `${ city.name } (${ region.name })`,
+			controlMode: city.controlMode === ControlMode.MANAGED ? 'MANAGED' : 'AUTOMATED',
+			treasury: region.nationalBudget.treasury,
+			cityAllocation: city.budget ? city.budget.allocation : null,
+			facilityCounts: { residential, commercial, industrial },
+			activeShipments,
+			shipmentsDelivered,
+		} );
+
+	}
 
 	function syncCityBuildings ( city ) {
 
@@ -449,6 +491,23 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 		AppState.hub.start();
 		AppState.hub.initGameHub();
 
+		// The default Hub_Top (population/money/score/happiness) is never
+		// fed data here - it has nothing engine-shaped to show (see the
+		// cutover-research findings) - so its docked panels are hidden
+		// rather than left showing frozen "0" placeholders that would
+		// visually clash with Hub_EngineStats below. Hub_Top.js itself is
+		// untouched; this only hides DOM elements this preview already
+		// owns a reference to via AppState.hub.topHub.
+		if ( AppState.hub.topHub ) {
+			AppState.hub.topHub.content0.style.display = 'none';
+			AppState.hub.topHub.content.style.display = 'none';
+			AppState.hub.topHub.content2.style.display = 'none';
+		}
+
+		document.getElementById( 'status' ).style.display = 'none';
+		engineStatsPanel = new Hub_EngineStats( AppState.hub );
+		updateEngineStatsPanel( city );
+
 		const built = syncCityBuildings( city );
 
 		AppState.view3d.center.x = city.width / 2;
@@ -456,7 +515,6 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 		AppState.view3d.cam.distance = Math.max( city.width, city.height ) * 1.4;
 		AppState.view3d.moveCamera();
 
-		status( `${ city.name } - ${ built } buildings shown` );
 		window.__engineRegionToCityDebug = { region, city, cargoRegistry, orchestrator, mode: () => mode, activeCityId: () => activeCityId };
 
 		entering = false;
@@ -471,6 +529,8 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 		document.getElementById( 'hub' ).style.display = 'none';
 		document.getElementById( 'regionCanvasHost' ).style.display = '';
 		document.getElementById( 'backButton' ).style.display = 'none';
+		document.getElementById( 'status' ).style.display = '';
+		engineStatsPanel = null; // the old panel's DOM was already discarded along with #hub's innerHTML on the next enterCity()
 		regionAnimating = true;
 		animateRegion();
 		status( 'back to region view' );
@@ -494,7 +554,7 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 
 		if ( mode === 'city' && activeCityId ) {
 			const city = region.cities.get( activeCityId );
-			if ( city ) syncCityBuildings( city );
+			if ( city ) { syncCityBuildings( city ); updateEngineStatsPanel( city ); }
 		}
 
 		const all = Array.from( region.shipments.values() );
