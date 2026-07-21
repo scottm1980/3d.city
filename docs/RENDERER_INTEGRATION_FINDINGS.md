@@ -1056,6 +1056,148 @@ entering a `MANAGED` city, an `AUTOMATED` city, dragging a slider, and
 opening all four tested panels in sequence - only the already-documented,
 confirmed-harmless transient water-plane NaN warnings remained.
 
+## Hub redesign, step 3: five more real mechanics, five more real panels
+
+Step 2 left `Eval`/`Ordinances`/`Awards`/`History`/`Disaster` as honest
+placeholders (`Hub_EnginePlaceholder.js`), each stating plainly that the
+mechanic wasn't modeled in `src/engine` yet. This step replaces all five
+with genuine engine mechanics and genuine panels - nothing left saying
+"not modeled yet."
+
+This step covers the five panels Budget/Economy don't already have
+`src/engine` equivalents for: **Eval, Ordinances, Awards, History,
+Disaster**. Each is backed by a genuinely new engine mechanic, not a
+placeholder:
+
+- **`engine/observability/CityHistory.js`** - a bounded, throttled
+  time-series recorder (`maxSamples`, `sampleInterval`) over real region
+  state per city: facility count, region-shared treasury, city allocation,
+  and average corridor utilization. `record(region)` is safe to call every
+  tick regardless of cadence; it self-throttles.
+- **`engine/observability/CityEvaluation.js`** - `evaluateCity(city,
+  region)` returns a composite 0-100 health score from three real
+  sub-scores: **vitality** (fraction of facilities `ACTIVE` vs
+  `STALLED`), **solvency** (city funds relative to twice the region's
+  cheapest buildable recipe - "real headroom," not just "not negative"),
+  and **strain** (inverse of average corridor congestion, the same
+  load/capacity ratio the region view's corridor coloring already uses).
+- **`engine/observability/AchievementTracker.js`** - five milestones
+  checked against live state each tick, each unlocking once and staying
+  unlocked: First Trade (any shipment delivered), Growing Town (a city
+  hits 10 facilities), Industrial Powerhouse (a city hits 5 industrial
+  facilities), Treasury Milestone (national treasury ≥ $1000), and
+  Founder (a city founded via `FoundCityTool` *after* the tracker started
+  watching - relative to the region's starting city count, not an
+  absolute one, so pre-placed cities can't retroactively unlock it).
+- **`engine/tools/OrdinanceTool.js`** - real, toggleable per-city policy
+  levers, defaulting off (no-op) so existing verified behavior is
+  unchanged until a player actually toggles one:
+  - `priorityFunding` multiplies a city's weight in
+    `NationalBudget._allocate()`'s per-tick weighted distribution by 1.5x
+    - a zero-sum pull of national funding toward this city, at every
+    other city's expense.
+  - `exportTariff` multiplies the production-tax revenue this city's
+    facilities contribute to the treasury (`TradeResolver
+    ._produceAndConsume`) by 1.5x.
+  Both required editing already-shipped Tier 4 engine files
+  (`NationalBudget.js`, `TradeResolver.js`) - the most invasive of the
+  five mechanics, but additive: a city with no ordinances toggled produces
+  bit-for-bit the same numbers as before this change (verified by the
+  existing `test_budget.mjs`/`test_corridor_load.mjs` regression scripts
+  passing unchanged after the edit).
+- **`engine/tools/DisruptionTool.js`** - a trade-sim-appropriate
+  "disaster," not a Micropolis fire/flood/monster reskin: a **supply
+  shock** (`Facility.disruptedUntilTick`) stops one facility producing for
+  K ticks regardless of input stock, distinct from a normal `STALLED`
+  (missing inputs, self-clearing) - it's a new field `TradeResolver`
+  checks and skips. A **transport disruption**
+  (`CorridorEdge.disruptedUntilTick` / `disruptionCapacityFactor`, read
+  through a new `effectiveCapacity(tick)` method) reduces or zeroes a
+  corridor's usable capacity, which forces `TradeResolver`'s shipment
+  matching to route around it or simply fail to move enough. Both ripple
+  genuinely: a headless test confirmed a severed corridor's `load` drops
+  to exactly 0 and a real downstream steel mill facility (previously
+  `ACTIVE`) transitions to `STALLED` once its buffered input runs out -
+  an actual traceable consequence, not a display flag, matching the
+  "fully traceable trade" design pillar.
+
+Every mechanic above was verified headlessly (scratch Node scripts, never
+committed) before any UI work: `CityHistory` and `CityEvaluation`'s
+sub-scores against hand-constructed facility/budget/corridor states,
+`AchievementTracker` against a full `RegionOrchestrator` run plus a real
+`FoundCityTool.found()` call (confirming Founder requires a genuinely new
+city, not just the starting pair), `OrdinanceTool` against direct
+before/after `NationalBudget.tick()`/`TradeResolver.tick()` comparisons
+(confirming the 1.5x multipliers apply exactly, not approximately), and
+`DisruptionTool` against a real two-city ore→coal→steel chain (confirming
+production/shipment behavior before, during, and after the disruption
+window, including automatic recovery once `disruptedUntilTick` passes).
+
+### Five new Hub panels, replacing the five placeholders
+
+`src/city3d/hub/Hub_EngineEval.js`, `Hub_EngineOrdinances.js`,
+`Hub_EngineAwards.js`, `Hub_EngineHistory.js`, and
+`Hub_EngineDisaster.js` are new files, each extending the real, generic
+`Hub_Pannel` base class exactly like the legacy `Hub_Eval.js`/
+`Hub_Awards.js`/etc. do (lazy `init()` on first open, `.hub-panel` CSS for
+background/border/shadow, an `update(data)` method the caller drives).
+`Hub_EngineStats._initPanelRegistry()` now instantiates these five in
+place of the five `Hub_EnginePlaceholder` entries step 2 registered,
+alongside the unchanged `Hub_EngineBudget`/`Hub_EngineEconomy` panels -
+same button bar, same positioning, same mutual-exclusivity behavior,
+just real panels where placeholders used to be. `Hub_EnginePlaceholder.js`
+itself is now dead code (nothing references it any more) and was deleted
+rather than left around unused. As before, none of the legacy `Hub_*.js`
+panel files, `Hub_Top.js`, or `Hub.js` were touched.
+
+`dev_engine_region_to_city.html` now constructs `cityHistory` (a
+`CityHistory`), `achievementTracker` (an `AchievementTracker`),
+`ordinanceTool`, and `disruptionTool` alongside the existing
+`orchestrator`, records/checks the first two every tick regardless of
+mode (so History/Awards reflect activity in cities the player isn't
+currently looking at, matching how `orchestrator.tick()` itself already
+behaves), and builds a `Hub_EngineStats` instance on `enterCity()`,
+tearing it down on `leaveCity()`. The Disaster panel's two trigger
+buttons pick a random currently-undisrupted facility/corridor belonging to
+the active city and call `disruptionTool.disruptFacility`/
+`disruptCorridor` directly - a real player action against real engine
+state, not a scripted demo.
+
+### Verified in an actual browser, and it found a real bug
+
+Playwright (headless Chromium, software GL) drove the full flow against
+the actual page: enter a real `MANAGED` city (`city-1`, deterministic per
+`RegionMapGenerator`), let the sim tick, then open each of the five new
+panels and read real rendered DOM text - not just that a function was
+called. All five showed genuine live data (an Eval score with
+vitality/solvency/strain sub-bars, a History table with real tick/
+treasury/congestion rows, an Awards list with 3/5 unlocked including
+"First Trade" at a specific real tick, both ordinances listed with their
+actual descriptions).
+
+Clicking the Priority Funding row surfaced a real, reproducible bug:
+`Hub_EngineOrdinances.update()` was tearing down and rebuilding its
+entire row list (`innerHTML = ''` then re-append) on every call, and the
+caller refreshes an open panel every tick (~150ms). A real Playwright
+click raced that rebuild and hit a `element was detached from the DOM`
+failure - the exact kind of interaction bug that only shows up by
+actually clicking through a running page, not by reading the code. Fixed
+by building each ordinance's row once in `init()`/on first sight and
+having `update()` adjust only that row's existing style in place
+thereafter - a panel's DOM shouldn't be more volatile than the data
+actually changing warrants, especially one with click handlers on it.
+Re-tested after the fix: the
+click now reliably toggles `city.ordinances.priorityFunding` on the real
+live `CityState` object. Triggering a Supply Shock similarly confirmed a
+real `Facility.disruptedUntilTick` gets set on a live object (not just a
+panel-local flag) and the Disaster panel's active-disruption list
+reflects it with a correct, decrementing `ticksRemaining`.
+
+The one console warning seen during the whole flow was the already-
+understood, already-documented transient water-plane NaN bounding-box
+warning noted elsewhere in this doc (confirmed harmless, unrelated to
+this work) - zero new errors of any kind.
+
 ## What's still open
 
 - Save/load for `src/engine` (`RegionState`/`CityState` serialization) is

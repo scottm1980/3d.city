@@ -20,6 +20,13 @@ export class Facility {
         this.inputStock = new Map();    // resourceId -> quantity buffered, awaiting consumption
         this.outputStock = new Map();   // resourceId -> quantity buffered, awaiting shipment
 
+        // Set by DisruptionTool (a "supply shock"): while region.tick is
+        // below this, TradeResolver skips production for this facility
+        // regardless of input stock, distinct from a normal STALLED (which
+        // means "missing inputs" and clears itself the moment supply
+        // arrives). null means not disrupted.
+        this.disruptedUntilTick = null;
+
     }
 
 }

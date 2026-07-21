@@ -23,6 +23,13 @@ export class CityState {
 
         this.budget = null;          // CityBudget, assigned by RegionState.addCity()
 
+        // Policy levers a player can toggle per city via OrdinanceTool -
+        // default off so a city with no ordinances set behaves exactly as
+        // it always has (see tools/OrdinanceTool.js for the real effects
+        // these have on NationalBudget allocation and TradeResolver
+        // revenue).
+        this.ordinances = { priorityFunding: false, exportTariff: false };
+
         this.tick = 0;
 
     }

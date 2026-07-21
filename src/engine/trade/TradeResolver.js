@@ -7,6 +7,13 @@ const TRANSPORT_SPEED = 4;   // distance covered per tick
 const SAME_CITY_DISTANCE = 1; // no corridor needed; still takes >=1 tick to arrive
 const TRADE_TARIFF_PER_UNIT = 0.2; // per unit delivered, collected into NationalBudget's treasury alongside production tax - "revenue... + trade activity" per COUNTRY_SIM_ENGINE_PLAN's locked budget decision
 
+// OrdinanceTool's "Export Tariff" lever: a city with it enabled sends more
+// of its own production tax into the shared national treasury - the
+// counterpart to "Priority Funding" pulling more out. Real revenue effect,
+// not a display toggle; a city could plausibly run both (fund the nation
+// generously, then also draw a bigger share back) or neither.
+const EXPORT_TARIFF_MULTIPLIER = 1.5;
+
 // Matches regional supply and demand per commodity, generates Shipments,
 // and advances them to delivery. This is the piece that makes automated
 // trade real rather than a stat: quantities move through actual corridor
@@ -59,6 +66,13 @@ export class TradeResolver {
                 const recipe = this._recipeFor( facility );
                 if ( ! recipe ) continue;
 
+                if ( facility.disruptedUntilTick !== null && this.region.tick < facility.disruptedUntilTick ) {
+
+                    facility.status = FacilityStatus.STALLED;
+                    continue;
+
+                }
+
                 const canProduce = recipe.inputs.every( input => ( facility.inputStock.get( input.resourceId ) || 0 ) >= input.quantity );
 
                 if ( recipe.inputs.length > 0 && ! canProduce ) {
@@ -77,11 +91,13 @@ export class TradeResolver {
 
                 }
 
+                const tariffMultiplier = city.ordinances && city.ordinances.exportTariff ? EXPORT_TARIFF_MULTIPLIER : 1;
+
                 for ( const output of recipe.outputs ) {
 
                     const amount = output.quantity * multiplier;
                     facility.outputStock.set( output.resourceId, ( facility.outputStock.get( output.resourceId ) || 0 ) + amount );
-                    productionRevenue += amount * recipe.taxRatePerOutputUnit;
+                    productionRevenue += amount * recipe.taxRatePerOutputUnit * tariffMultiplier;
 
                 }
 
@@ -193,7 +209,7 @@ export class TradeResolver {
 
                     const corridor = this.region.corridors.get( corridorId );
                     const used = reserved.get( corridorId ) || 0;
-                    const room = Math.max( 0, corridor.capacity - used );
+                    const room = Math.max( 0, corridor.effectiveCapacity( this.region.tick ) - used );
                     quantity = Math.min( quantity, room );
 
                 }

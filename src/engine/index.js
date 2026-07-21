@@ -33,6 +33,12 @@ export { ZoningTool } from './tools/ZoningTool.js';
 export { BulldozeTool } from './tools/BulldozeTool.js';
 export { FoundCityTool } from './tools/FoundCityTool.js';
 export { TownCharterTool, DefaultTownCharter } from './tools/TownCharterTool.js';
+export { OrdinanceTool, OrdinanceId } from './tools/OrdinanceTool.js';
+export { DisruptionTool } from './tools/DisruptionTool.js';
+
+export { CityHistory } from './observability/CityHistory.js';
+export { evaluateCity } from './observability/CityEvaluation.js';
+export { AchievementTracker } from './observability/AchievementTracker.js';
 
 export { CargoVisual, CargoVisualRegistry, ModelVariant, visualForShipment } from './visuals/CargoVisual.js';
 export { DefaultCargoVisuals, DefaultCargoCategoryFallbacks, createDefaultCargoVisualRegistry } from './visuals/DefaultCargoVisuals.js';

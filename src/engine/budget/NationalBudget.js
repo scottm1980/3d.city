@@ -13,6 +13,12 @@ const ALLOCATION_FRACTION = 0.5;
 // forever, since weight is driven by existing facility count.
 const MIN_ALLOCATION_WEIGHT = 1;
 
+// OrdinanceTool's "Priority Funding" lever: a city with it enabled draws a
+// larger share of the distributable treasury than its facility count alone
+// would earn it, at every other city's expense (the weighted split is
+// zero-sum) - a real, mechanical policy trade-off, not a display toggle.
+const PRIORITY_FUNDING_MULTIPLIER = 1.5;
+
 // A new city can't wait for its first tick() to earn any revenue before
 // it's allowed to build anything - it would have $0 and every recipe's
 // buildCost would block it forever. A founding grant (content, not
@@ -63,7 +69,12 @@ export class NationalBudget {
         const cityList = Array.from( cities.values() );
         if ( cityList.length === 0 ) return;
 
-        const weights = cityList.map( city => Math.max( MIN_ALLOCATION_WEIGHT, city.facilities.size ) );
+        const weights = cityList.map( city => {
+
+            const base = Math.max( MIN_ALLOCATION_WEIGHT, city.facilities.size );
+            return city.ordinances && city.ordinances.priorityFunding ? base * PRIORITY_FUNDING_MULTIPLIER : base;
+
+        } );
         const totalWeight = weights.reduce( ( sum, w ) => sum + w, 0 );
 
         const distributable = this.treasury * ALLOCATION_FRACTION;

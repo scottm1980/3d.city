@@ -53,6 +53,11 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 	import { availableResourceIds } from './src/engine/trade/TradeResolver.js';
 	import { developLot } from './src/engine/resolution/ZoneResolver.js';
 	import { DefaultTownCharter } from './src/engine/tools/TownCharterTool.js';
+	import { CityHistory } from './src/engine/observability/CityHistory.js';
+	import { evaluateCity } from './src/engine/observability/CityEvaluation.js';
+	import { AchievementTracker } from './src/engine/observability/AchievementTracker.js';
+	import { OrdinanceTool, OrdinanceId } from './src/engine/tools/OrdinanceTool.js';
+	import { DisruptionTool } from './src/engine/tools/DisruptionTool.js';
 
 	const TILE_WATER = 2;
 	const TILE_GROUND = 0;
@@ -67,6 +72,16 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 	let region, orchestrator, cargoRegistry;
 	let mode = 'region'; // 'region' | 'city'
 	let activeCityId = null;
+
+	// Real src/engine mechanics backing the 5 non-Budget/Economy Hub panels
+	// (Eval, Ordinances, Awards, History, Disaster) - see
+	// RENDERER_INTEGRATION_FINDINGS.md's Hub redesign. cityHistory/
+	// achievementTracker are region-wide and always ticking regardless of
+	// mode; ordinanceTool/disruptionTool are stateless helpers.
+	// engineStatsPanel itself (declared below, alongside cityCharters) only
+	// exists while a city is open (rebuilt fresh each enterCity(), same as
+	// Hub/View themselves).
+	let cityHistory, achievementTracker, ordinanceTool, disruptionTool;
 
 	function status ( s ) { document.getElementById( 'status' ).textContent = s; }
 	function hexToThreeColor ( hex ) { return new THREE.Color( ( (hex>>16)&255 )/255, ( (hex>>8)&255 )/255, (hex&255)/255 ); }
@@ -374,6 +389,27 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 			charter: cityCharters.get( city.id ) || null,
 		} );
 
+		const ordinances = [
+			{
+				id: OrdinanceId.PRIORITY_FUNDING, name: 'Priority Funding',
+				description: 'Boosts this city\'s share of national treasury allocation (1.5x weight), at every other city\'s expense.',
+				active: ordinanceTool.isEnabled( city, OrdinanceId.PRIORITY_FUNDING ),
+			},
+			{
+				id: OrdinanceId.EXPORT_TARIFF, name: 'Export Tariff',
+				description: 'Increases the production tax revenue this city sends to the national treasury (1.5x).',
+				active: ordinanceTool.isEnabled( city, OrdinanceId.EXPORT_TARIFF ),
+			},
+		];
+
+		engineStatsPanel.updateAll( {
+			eval: evaluateCity( city, region ),
+			ordinances,
+			awards: achievementTracker.all(),
+			history: cityHistory.samplesFor( city.id ),
+			disaster: disruptionTool.activeDisruptions( region ),
+		} );
+
 	}
 
 	function syncCityBuildings ( city ) {
@@ -535,6 +571,22 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 
 		document.getElementById( 'status' ).style.display = 'none';
 		engineStatsPanel = new Hub_EngineStats( AppState.hub );
+		engineStatsPanel.pannels.Ordinances.onToggle = ( ordinanceId ) => {
+			ordinanceTool.toggle( city, ordinanceId );
+			updateEngineStatsPanel( city );
+		};
+		engineStatsPanel.pannels.Disaster.onDisruptFacility = () => {
+			const active = Array.from( city.facilities.values() ).filter( f => f.disruptedUntilTick === null );
+			if ( active.length === 0 ) return;
+			disruptionTool.disruptFacility( region, active[ Math.floor( Math.random() * active.length ) ] );
+			updateEngineStatsPanel( city );
+		};
+		engineStatsPanel.pannels.Disaster.onDisruptCorridor = () => {
+			const corridors = region.corridorsFor( city.id ).filter( c => c.disruptedUntilTick === null );
+			if ( corridors.length === 0 ) return;
+			disruptionTool.disruptCorridor( region, corridors[ Math.floor( Math.random() * corridors.length ) ] );
+			updateEngineStatsPanel( city );
+		};
 		engineStatsPanel.onPanelOpen = () => updateEngineStatsPanel( city );
 		updateEngineStatsPanel( city );
 
@@ -581,6 +633,12 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 		orchestrator.tick();
 		tickCount ++;
 		updateCorridorColors();
+
+		// Region-wide observability - always runs regardless of mode, same
+		// as orchestrator.tick() itself, so History/Awards reflect activity
+		// in cities the player isn't currently looking at.
+		cityHistory.record( region );
+		achievementTracker.check( region );
 
 		if ( mode === 'city' && activeCityId ) {
 			const city = region.cities.get( activeCityId );
@@ -641,6 +699,11 @@ html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px 
 				charterFor: city => cityCharters.get( city.id ) || DefaultTownCharter,
 			} );
 			cargoRegistry = createDefaultCargoVisualRegistry();
+
+			cityHistory = new CityHistory();
+			achievementTracker = new AchievementTracker( region );
+			ordinanceTool = new OrdinanceTool();
+			disruptionTool = new DisruptionTool( { defaultDuration: 30 } );
 
 			// Managed cities need player zoning to grow (that's the whole
 			// point of the control-mode split) - since this preview's

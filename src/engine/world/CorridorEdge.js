@@ -20,6 +20,14 @@ export class CorridorEdge {
 
         this.load = 0; // current throughput this tick, owned by the Tier 4 trade resolver
 
+        // Set by DisruptionTool (a "transport disruption"): while
+        // region.tick is below this, effectiveCapacity() reports capacity
+        // scaled by disruptionCapacityFactor instead of the full value,
+        // forcing TradeResolver's shipment matching to reroute around or
+        // queue behind the bottleneck. null means not disrupted.
+        this.disruptedUntilTick = null;
+        this.disruptionCapacityFactor = 0; // 0 = fully severed, e.g. 0.25 = a partial washout
+
     }
 
     connects ( cityId ) {
@@ -33,6 +41,22 @@ export class CorridorEdge {
         if ( this.cityAId === cityId ) return this.cityBId;
         if ( this.cityBId === cityId ) return this.cityAId;
         return null;
+
+    }
+
+    // What TradeResolver's shipment matching should actually treat this
+    // corridor's capacity as, given any active disruption - the single
+    // source of truth so nothing reads the raw `capacity` field directly
+    // and silently ignores a disruption.
+    effectiveCapacity ( currentTick ) {
+
+        if ( this.disruptedUntilTick !== null && currentTick < this.disruptedUntilTick ) {
+
+            return this.capacity * this.disruptionCapacityFactor;
+
+        }
+
+        return this.capacity;
 
     }
 

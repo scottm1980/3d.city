@@ -1,7 +1,11 @@
 import { AppState } from '../../AppState.js'
 import { Hub_EngineBudget } from './Hub_EngineBudget.js';
 import { Hub_EngineEconomy } from './Hub_EngineEconomy.js';
-import { Hub_EnginePlaceholder } from './Hub_EnginePlaceholder.js';
+import { Hub_EngineEval } from './Hub_EngineEval.js';
+import { Hub_EngineOrdinances } from './Hub_EngineOrdinances.js';
+import { Hub_EngineAwards } from './Hub_EngineAwards.js';
+import { Hub_EngineHistory } from './Hub_EngineHistory.js';
+import { Hub_EngineDisaster } from './Hub_EngineDisaster.js';
 
 //------------------------------------------------------//
 //         ENGINE-NATIVE STATS PANEL (src/engine)        //
@@ -47,21 +51,25 @@ export class Hub_EngineStats {
 
 	// Mirrors Hub_Top.initPannel()'s exact pattern (a pannels registry +
 	// one button per panel, closing every other panel before opening the
-	// clicked one) - real, working popups, not just a stats readout. Two
-	// panels have real engine backing (Budget, Economy); the rest are
-	// honest placeholders for mechanics src/engine doesn't model (see the
-	// cutover-research findings) rather than silently missing buttons a
-	// player coming from the real game's UI would expect to find.
+	// clicked one) - real, working popups. Every panel here has genuine
+	// src/engine backing: Budget/Economy read the two-tier budget system
+	// and TownCharterTool directly; Eval/Ordinances/Awards/History/
+	// Disaster are backed by observability/CityEvaluation.js,
+	// tools/OrdinanceTool.js, observability/AchievementTracker.js,
+	// observability/CityHistory.js, and tools/DisruptionTool.js
+	// respectively (see RENDERER_INTEGRATION_FINDINGS.md's Hub redesign
+	// steps 1-3) - nothing here fabricates a stat src/engine doesn't
+	// actually track.
 	_initPanelRegistry ( hub ) {
 
 		this.pannels = {
 			Budget: new Hub_EngineBudget( hub, 'Budget' ),
 			Economy: new Hub_EngineEconomy( hub, 'Economy' ),
-			Eval: new Hub_EnginePlaceholder( hub, 'Evaluation', 'Crime, pollution, traffic, health, and happiness aren’t modeled in src/engine yet — it’s a resource/trade-gated country sim, not a Micropolis-style census sim.', true ),
-			Ordinances: new Hub_EnginePlaceholder( hub, 'Ordinances', 'City ordinances aren’t modeled in src/engine yet.', true ),
-			Awards: new Hub_EnginePlaceholder( hub, 'Awards', 'Achievements aren’t modeled in src/engine yet.', true ),
-			History: new Hub_EnginePlaceholder( hub, 'History', 'Historical trend charts aren’t modeled in src/engine yet.', true ),
-			Disaster: new Hub_EnginePlaceholder( hub, 'Disaster', 'Disasters aren’t modeled in src/engine yet.', true ),
+			Eval: new Hub_EngineEval( hub ),
+			Ordinances: new Hub_EngineOrdinances( hub ),
+			Awards: new Hub_EngineAwards( hub ),
+			History: new Hub_EngineHistory( hub ),
+			Disaster: new Hub_EngineDisaster( hub ),
 		};
 
 		const icons = { Budget: '\u{1F4B0}', Economy: '\u{1F3ED}', Eval: '\u{1F4CA}', Ordinances: '⚖️', Awards: '\u{1F3C6}', History: '\u{1F4DC}', Disaster: '⚠️' };
@@ -143,6 +151,22 @@ export class Hub_EngineStats {
 			AppState.hub.updateRCI( data.facilityCounts.residential, data.facilityCounts.commercial, data.facilityCounts.industrial );
 
 		}
+
+	}
+
+	// data: { eval, ordinances, awards, history, disaster } - any key can
+	// be omitted to skip refreshing that panel this call. Separate from
+	// update() (the top stats readout + Budget/Economy, driven directly
+	// by the caller) so the caller can refresh the two groups
+	// independently if it ever needs to.
+	updateAll ( data ) {
+
+		if ( ! data ) return;
+		if ( data.eval !== undefined ) this.pannels.Eval.update( data.eval );
+		if ( data.ordinances !== undefined ) this.pannels.Ordinances.update( data.ordinances );
+		if ( data.awards !== undefined ) this.pannels.Awards.update( data.awards );
+		if ( data.history !== undefined ) this.pannels.History.update( data.history );
+		if ( data.disaster !== undefined ) this.pannels.Disaster.update( data.disaster );
 
 	}
 
