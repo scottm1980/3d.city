@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine real-renderer preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+<link type="text/css" rel="stylesheet" href="index.css">
+</head>
+<style>
+#status { position:absolute; left:10px; top:10px; z-index:10; font:12px monospace; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; }
+</style>
+<script type="module">
+	// Fifth dev preview - the first to drive the game's REAL rendering
+	// code (src/city3d/View.js, Hub.js) instead of a hand-rolled canvas
+	// or a standalone Three.js scene. Deliberately does NOT call
+	// Main.init() or Main.initWorker(): no Worker is ever booted, GPL
+	// CityGame.js is never loaded or executed. Only View/Hub/AppState are
+	// constructed directly, and AppState.tilesData is fed from
+	// src/engine's CityMapGenerator through a small tile-value adapter
+	// instead of from a WorkerBridge RUN/NEWMAP message.
+	//
+	// Tile-value mapping, richer than the first pass: water, plain ground,
+	// and now trees for FOREST terrain, using Tile.js's own documented
+	// constants (RIVER=2 water, DIRT=0 ground, TREEBASE=21..LASTTREE=36
+	// tree variants) read for interop with the renderer's actual value
+	// contract, not guessed. Confirmed via View.js's own drawLayer():
+	// values 0-239 index directly into the pool's pre-baked texture atlas
+	// (render.copyTextureToTexture(this.pool.tile('texture', g), ...)),
+	// and tree values (21-29) skip ground-texture drawing entirely and
+	// go through a separate real 3D mesh pipeline (addTree/populateTree)
+	// - confirmed by reading View.js itself (MIT code), not GPL logic.
+	// Still no shoreline blending - the water border range (5-20) also
+	// drives height-map deformation intertwined with several special-
+	// cased branches, real complexity deliberately deferred rather than
+	// guessed at.
+	import { View } from './src/city3d/View.js';
+	import { Hub } from './src/city3d/Hub.js';
+	import { AppState } from './src/AppState.js';
+
+	import { CityState, ControlMode } from './src/engine/world/CityState.js';
+	import { CityMapGenerator } from './src/engine/worldgen/CityMapGenerator.js';
+	import { TerrainType } from './src/engine/worldgen/Terrain.js';
+
+	const TILE_WATER = 2;      // Tile.RIVER - plain water, no shoreline blend
+	const TILE_GROUND = 0;     // Tile.DIRT - plain ground, no biome texture yet
+	const TILE_TREE_BASE = 21; // Tile.TREEBASE - tree variants run 21..28 (29 excluded, special-cased in View.js)
+
+	function status ( text ) {
+		document.getElementById( 'status' ).textContent = text;
+	}
+
+	// Deterministic tree-variant pick per lot, not tied to any GPL logic -
+	// just spreads lots across the 8 plain tree variants (21..28) for
+	// visual variety instead of every tree looking identical.
+	function treeVariant ( lot ) {
+		return TILE_TREE_BASE + ( ( lot.x * 7 + lot.y * 13 ) % 8 );
+	}
+
+	function buildTilesData ( city ) {
+
+		const data = new Float32Array( city.width * city.height );
+
+		for ( const lot of city.lots ) {
+
+			const n = lot.x + lot.y * city.width; // square map, so this matches View's x + y*mapSize[1] convention
+
+			if ( lot.terrain === TerrainType.WATER ) data[ n ] = TILE_WATER;
+			else if ( lot.terrain === TerrainType.FOREST ) data[ n ] = treeVariant( lot );
+			else data[ n ] = TILE_GROUND;
+
+		}
+
+		return data;
+
+	}
+
+	async function run () {
+
+		try {
+
+			status( 'generating city...' );
+			const size = 96;
+			const city = new CityState( 'preview', 'Preview', { width: size, height: size, controlMode: ControlMode.MANAGED } );
+			new CityMapGenerator( 1 ).generate( city );
+
+			const tilesData = buildTilesData( city );
+			let waterCount = 0, treeCount = 0;
+			for ( let i = 0; i < tilesData.length; i ++ ) {
+				if ( tilesData[ i ] === TILE_WATER ) waterCount ++;
+				else if ( tilesData[ i ] >= TILE_TREE_BASE && tilesData[ i ] < TILE_TREE_BASE + 8 ) treeCount ++;
+			}
+
+			status( 'constructing real View/Hub (no Worker, no CityGame.js)...' );
+			AppState.hub = new Hub();
+			AppState.view3d = new View();
+			// initRenderer() calls AppState.main.start() at the end,
+			// assuming Main.init() already ran (it sets AppState.main).
+			// Deliberately not calling Main.init() here since it would
+			// boot a real Worker and load GPL CityGame.js - stub the one
+			// method actually needed instead.
+			AppState.main = { start () {} };
+
+			status( 'initRenderer() - loading real game assets, may take a moment...' );
+			await AppState.view3d.initRenderer();
+
+			status( 'paintMap() with src/engine-generated tilesData...' );
+			AppState.tilesData = tilesData;
+			AppState.view3d.paintMap( [ size, size ], false );
+
+			// Dismiss the real game's title/menu overlay (normally cleared
+			// by clicking NEW GAME through the Hub flow this harness
+			// skips) purely so the rendered terrain is actually visible
+			// for verification, not obstructed by the intro screen.
+			AppState.view3d.clearIntro();
+			// clearIntro() only removes the 3D scene's title/border objects
+			// and the mainmenu buttons - the "Loading 3d models..." DOM
+			// overlay (Hub's this.full) is separately faded out and removed
+			// by AppState.hub.start()'s own timer, normally triggered by
+			// Main.start(). Previously left unresolved; found via reading
+			// Hub.js's start()/fadding() while researching shoreline tiles.
+			AppState.hub.start();
+
+			status( 'done' );
+			window.__engineView3DReady = {
+				ok: true,
+				size,
+				waterCount,
+				treeCount,
+				groundCount: tilesData.length - waterCount - treeCount,
+				isWebGPU: AppState.isWebGPU,
+			};
+
+		} catch ( err ) {
+
+			status( 'ERROR: ' + err.message );
+			window.__engineView3DReady = { ok: false, error: err.message, stack: err.stack };
+			console.error( err );
+
+		}
+
+	}
+
+	run();
+
+</script>
+
+<div id="container"></div>
+<div id="hub"></div>
+<div id="status">starting...</div>
+
+</body></html>

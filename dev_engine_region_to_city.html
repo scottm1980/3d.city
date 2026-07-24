@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine region-to-city preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+<link type="text/css" rel="stylesheet" href="index.css">
+</head>
+<style>
+*{ padding:0; margin:0; }
+html, body { width:100%; height:100%; background:#0d0f14; color:#fff; font:10px sans-serif; overflow:hidden; }
+#regionCanvasHost canvas { display:block; }
+#container, #hub { display:none; }
+#status { position:absolute; left:10px; top:10px; z-index:20; font:12px monospace; background:rgba(0,0,0,0.7); color:#fff; padding:6px 10px; max-width:90%; }
+#instructions { position:absolute; left:10px; top:56px; z-index:20; font:12px sans-serif; background:rgba(0,0,0,0.7); color:#fff; padding:6px 10px; max-width:360px; }
+#backButton { position:absolute; right:10px; top:10px; z-index:20; font:13px sans-serif; background:rgba(20,30,45,0.9); color:#fff; padding:8px 14px; border:1px solid rgba(140,200,255,0.4); border-radius:4px; cursor:pointer; display:none; }
+#backButton:hover { background:rgba(40,60,90,0.9); }
+</style>
+<script type="module">
+	// Eighth dev preview - a genuine answer to the "real multi-city
+	// architecture in View.js itself" item RENDERER_INTEGRATION_FINDINGS.md
+	// has flagged as open since the vehicles-preview milestone. That doc
+	// framed it as "View.js would need real changes" - but View.js doesn't
+	// actually need to change at all: it's a proven single-city renderer
+	// (every prior View.js-driving preview), and dev_engine_region_3d.html
+	// already proved a real multi-city REGION overview (cities as nodes,
+	// corridors as lines, many concurrent vehicles) as a separate,
+	// standalone Three.js scene. This preview composes the two: a real
+	// region overview you can click into, entering a real View.js close-up
+	// of that specific city, with a way back out. No View.js internals
+	// touched - this is orchestration, not a renderer refactor.
+	//
+	// Still never calls Main.init()/boots a Worker/loads GPL CityGame.js.
+	import { View } from './src/city3d/View.js';
+	import { Hub } from './src/city3d/Hub.js';
+	import { Hub_EngineStats } from './src/city3d/hub/Hub_EngineStats.js';
+	import { AppState } from './src/AppState.js';
+	import * as THREE from './src/three/three.module.js';
+	import { OrbitControls } from './src/jsm/controls/OrbitControls.js';
+
+	import { RegionState } from './src/engine/world/RegionState.js';
+	import { RegionMapGenerator } from './src/engine/worldgen/RegionMapGenerator.js';
+	import { RegionOrchestrator } from './src/engine/orchestrator/RegionOrchestrator.js';
+	import { DefaultResourceTypes } from './src/engine/worldgen/DefaultResources.js';
+	import { DefaultRecipes, DefaultProcessedResourceTypes } from './src/engine/resolution/DefaultRecipes.js';
+	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
+	import { visualForShipment } from './src/engine/visuals/CargoVisual.js';
+	import { ShipmentState } from './src/engine/trade/Shipment.js';
+	import { ControlMode } from './src/engine/world/CityState.js';
+	import { ZoneType } from './src/engine/world/ZoneType.js';
+	import { TerrainType } from './src/engine/worldgen/Terrain.js';
+	import { availableResourceIds } from './src/engine/trade/TradeResolver.js';
+	import { developLot } from './src/engine/resolution/ZoneResolver.js';
+	import { DefaultTownCharter } from './src/engine/tools/TownCharterTool.js';
+	import { CityHistory } from './src/engine/observability/CityHistory.js';
+	import { evaluateCity } from './src/engine/observability/CityEvaluation.js';
+	import { AchievementTracker } from './src/engine/observability/AchievementTracker.js';
+	import { OrdinanceTool, OrdinanceId } from './src/engine/tools/OrdinanceTool.js';
+	import { DisruptionTool } from './src/engine/tools/DisruptionTool.js';
+	import { serializeRegion, applyRegionSnapshot, serializeOrchestrator, applyOrchestratorSnapshot } from './src/engine/persistence/RegionSerializer.js';
+
+	const TILE_WATER = 2;
+	const TILE_GROUND = 0;
+	const TILE_TREE_BASE = 21;
+	const TOOL_ID = { [ZoneType.RESIDENTIAL]: 1, [ZoneType.COMMERCIAL]: 2, [ZoneType.INDUSTRIAL]: 3 };
+	const ZONE_TYPE_FOR_TOOL_NAME = { residential: ZoneType.RESIDENTIAL, commercial: ZoneType.COMMERCIAL, industrial: ZoneType.INDUSTRIAL };
+
+	const MAX_VEHICLE_INSTANCES = 800;
+	const REGION_SIZE = 200;
+	const TICK_INTERVAL_MS = 150;
+	const SAVE_KEY = 'engineRegionSave';
+
+	let region, orchestrator, cargoRegistry;
+	let mode = 'region'; // 'region' | 'city'
+	let activeCityId = null;
+
+	// Real src/engine mechanics backing the 5 non-Budget/Economy Hub panels
+	// (Eval, Ordinances, Awards, History, Disaster) - see
+	// RENDERER_INTEGRATION_FINDINGS.md's Hub redesign. cityHistory/
+	// achievementTracker are region-wide and always ticking regardless of
+	// mode; ordinanceTool/disruptionTool are stateless helpers.
+	// engineStatsPanel itself (declared below, alongside cityCharters) only
+	// exists while a city is open (rebuilt fresh each enterCity(), same as
+	// Hub/View themselves).
+	let cityHistory, achievementTracker, ordinanceTool, disruptionTool;
+
+	function status ( s ) { document.getElementById( 'status' ).textContent = s; }
+	function hexToThreeColor ( hex ) { return new THREE.Color( ( (hex>>16)&255 )/255, ( (hex>>8)&255 )/255, (hex&255)/255 ); }
+	function toWorld ( regionPos ) { return { x: regionPos.x - REGION_SIZE / 2, z: regionPos.y - REGION_SIZE / 2 }; }
+
+	// --- Region mode: a standalone Three.js scene, the same proven
+	// technique as dev_engine_region_3d.html - real cities/corridors/
+	// vehicles, zero involvement from View.js. ---
+
+	let scene, camera, renderer, controls, raycaster;
+	let vehicleMesh, cityGroup, corridorLines;
+	const dummy = new THREE.Object3D();
+	const hiddenMatrix = new THREE.Matrix4().makeScale( 0, 0, 0 );
+
+	function initRegionScene () {
+
+		scene = new THREE.Scene();
+		scene.background = new THREE.Color( 0x0d0f14 );
+
+		camera = new THREE.PerspectiveCamera( 55, window.innerWidth / window.innerHeight, 0.1, 2000 );
+		camera.position.set( 0, 180, 180 );
+
+		renderer = new THREE.WebGLRenderer( { antialias: true } );
+		renderer.setSize( window.innerWidth, window.innerHeight );
+		document.getElementById( 'regionCanvasHost' ).appendChild( renderer.domElement );
+
+		controls = new OrbitControls( camera, renderer.domElement );
+		controls.target.set( 0, 0, 0 );
+
+		raycaster = new THREE.Raycaster();
+
+		scene.add( new THREE.AmbientLight( 0xffffff, 0.6 ) );
+		const sun = new THREE.DirectionalLight( 0xffffff, 0.8 );
+		sun.position.set( 100, 200, 100 );
+		scene.add( sun );
+
+		const ground = new THREE.Mesh(
+			new THREE.PlaneGeometry( REGION_SIZE * 1.4, REGION_SIZE * 1.4 ),
+			new THREE.MeshStandardMaterial( { color: 0x1a1e26 } ),
+		);
+		ground.rotation.x = -Math.PI / 2;
+		scene.add( ground );
+
+		const vehicleGeometry = new THREE.BoxGeometry( 1.4, 1.4, 1.4 );
+		const vehicleMaterial = new THREE.MeshStandardMaterial( { vertexColors: true } );
+		vehicleMesh = new THREE.InstancedMesh( vehicleGeometry, vehicleMaterial, MAX_VEHICLE_INSTANCES );
+		scene.add( vehicleMesh );
+
+		cityGroup = new THREE.Group();
+		scene.add( cityGroup );
+
+		corridorLines = new THREE.Group();
+		scene.add( corridorLines );
+
+		renderer.domElement.addEventListener( 'click', onRegionClick );
+
+		window.addEventListener( 'resize', () => {
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+			renderer.setSize( window.innerWidth, window.innerHeight );
+		} );
+
+	}
+
+	function buildRegionMeshes () {
+
+		cityGroup.clear();
+		corridorLines.clear();
+
+		for ( const city of region.cities.values() ) {
+
+			const pos = toWorld( city.regionPosition );
+			const radius = 2 + Math.min( 8, city.facilities.size / 15 );
+
+			const mesh = new THREE.Mesh(
+				new THREE.SphereGeometry( radius, 16, 12 ),
+				new THREE.MeshStandardMaterial( { color: city.controlMode === ControlMode.MANAGED ? 0x4a9edd : 0x84dd4a } ),
+			);
+			mesh.position.set( pos.x, radius, pos.z );
+			mesh.userData.cityId = city.id;
+			mesh.userData.baseRadius = radius;
+			cityGroup.add( mesh );
+
+		}
+
+		for ( const corridor of region.corridors.values() ) {
+
+			const a = toWorld( region.cities.get( corridor.cityAId ).regionPosition );
+			const b = toWorld( region.cities.get( corridor.cityBId ).regionPosition );
+
+			const geometry = new THREE.BufferGeometry().setFromPoints( [
+				new THREE.Vector3( a.x, 0.2, a.z ),
+				new THREE.Vector3( b.x, 0.2, b.z ),
+			] );
+			const line = new THREE.Line( geometry, new THREE.LineBasicMaterial( { color: 0x3a4658 } ) );
+			line.userData.corridorId = corridor.id;
+			corridorLines.add( line );
+
+		}
+
+	}
+
+	function updateCorridorColors () {
+
+		for ( const line of corridorLines.children ) {
+
+			const corridor = region.corridors.get( line.userData.corridorId );
+			const utilization = corridor.capacity > 0 ? Math.min( 1, corridor.load / corridor.capacity ) : 0;
+			line.material.color.set( utilization > 0.7 ? 0xe05a4f : ( utilization > 0.3 ? 0xd9b44a : 0x3a4658 ) );
+
+		}
+
+		// City sphere size tracks live facility count too, since growth
+		// keeps happening (via automated/managed reattempt) whether or
+		// not the player is currently looking at the region view.
+		for ( const mesh of cityGroup.children ) {
+
+			const city = region.cities.get( mesh.userData.cityId );
+			const radius = 2 + Math.min( 8, city.facilities.size / 15 );
+			mesh.scale.setScalar( radius / mesh.userData.baseRadius );
+
+		}
+
+	}
+
+	function cityOfFacility ( facilityId ) {
+		for ( const city of region.cities.values() ) if ( city.facilities.has( facilityId ) ) return city;
+		return null;
+	}
+
+	function shipmentPosition ( shipment ) {
+
+		const originCity = cityOfFacility( shipment.originFacilityId );
+		if ( ! originCity ) return null;
+		if ( shipment.path.length === 0 ) return originCity.regionPosition;
+
+		let currentCity = originCity;
+		let traveled = shipment.progress * shipment.distance;
+
+		for ( let i = 0; i < shipment.path.length; i ++ ) {
+
+			const corridor = region.corridors.get( shipment.path[ i ] );
+			if ( ! corridor ) return currentCity.regionPosition;
+			const nextCity = region.cities.get( corridor.other( currentCity.id ) );
+			if ( ! nextCity ) return currentCity.regionPosition;
+
+			const isLastSegment = i === shipment.path.length - 1;
+			if ( traveled < corridor.distance || isLastSegment ) {
+				const t = corridor.distance === 0 ? 1 : Math.min( 1, Math.max( 0, traveled / corridor.distance ) );
+				const a = currentCity.regionPosition, b = nextCity.regionPosition;
+				return { x: a.x + ( b.x - a.x ) * t, y: a.y + ( b.y - a.y ) * t };
+			}
+
+			traveled -= corridor.distance;
+			currentCity = nextCity;
+
+		}
+
+		return currentCity.regionPosition;
+
+	}
+
+	function updateVehicleInstances () {
+
+		let i = 0;
+		for ( const shipment of region.shipments.values() ) {
+
+			if ( i >= MAX_VEHICLE_INSTANCES ) break;
+			if ( shipment.state !== ShipmentState.IN_TRANSIT ) continue;
+			if ( shipment.path.length === 0 ) continue;
+
+			const pos = shipmentPosition( shipment );
+			if ( ! pos ) continue;
+
+			const world = toWorld( pos );
+			dummy.position.set( world.x, 1, world.z );
+			dummy.scale.set( 1, 1, 1 );
+			dummy.updateMatrix();
+			vehicleMesh.setMatrixAt( i, dummy.matrix );
+
+			const visual = visualForShipment( shipment, cargoRegistry, region.resources );
+			vehicleMesh.setColorAt( i, visual ? hexToThreeColor( visual.tint ) : new THREE.Color( 0xffffff ) );
+
+			i ++;
+
+		}
+
+		for ( let j = i; j < MAX_VEHICLE_INSTANCES; j ++ ) vehicleMesh.setMatrixAt( j, hiddenMatrix );
+		vehicleMesh.count = MAX_VEHICLE_INSTANCES;
+		vehicleMesh.instanceMatrix.needsUpdate = true;
+		if ( vehicleMesh.instanceColor ) vehicleMesh.instanceColor.needsUpdate = true;
+
+	}
+
+	function onRegionClick ( e ) {
+
+		if ( mode !== 'region' ) return;
+
+		const rect = renderer.domElement.getBoundingClientRect();
+		const ndc = new THREE.Vector2(
+			( ( e.clientX - rect.left ) / rect.width ) * 2 - 1,
+			-( ( e.clientY - rect.top ) / rect.height ) * 2 + 1,
+		);
+		raycaster.setFromCamera( ndc, camera );
+		const hits = raycaster.intersectObjects( cityGroup.children );
+		if ( hits.length > 0 ) enterCity( hits[ 0 ].object.userData.cityId );
+
+	}
+
+	let regionAnimating = true;
+
+	function animateRegion () {
+
+		if ( ! regionAnimating ) return;
+		requestAnimationFrame( animateRegion );
+		updateVehicleInstances();
+		controls.update();
+		renderer.render( scene, camera );
+
+	}
+
+	// --- City mode: a real View.js/Hub instance for exactly the clicked
+	// city's own CityState, rebuilt fresh on every entry (View.js has no
+	// dispose()/multi-instance-switch support, so this preview does its
+	// own best-effort DOM cleanup between switches rather than assuming
+	// City.js can be safely reused across different cities - see the
+	// findings doc for the honest limitation this leaves: WebGL contexts
+	// from earlier city visits are not explicitly released, only their
+	// DOM/JS references dropped, so a very long session hopping between
+	// many different cities could eventually hit a browser's concurrent-
+	// context limit. Fine for proving the architecture, a real cutover
+	// would need View.js to grow an actual dispose() path).
+
+	function treeVariant ( x, y ) { return TILE_TREE_BASE + ( ( x * 7 + y * 13 ) % 8 ); }
+
+	function buildCityTilesData ( city ) {
+
+		const data = new Float32Array( city.width * city.height );
+		for ( const lot of city.lots ) {
+
+			const n = lot.x + lot.y * city.width;
+			if ( lot.terrain === TerrainType.WATER ) data[ n ] = TILE_WATER;
+			else if ( lot.terrain === TerrainType.FOREST ) data[ n ] = treeVariant( lot.x, lot.y );
+			else data[ n ] = TILE_GROUND;
+
+		}
+		return data;
+
+	}
+
+	const renderedFacilityIdsByCity = new Map(); // cityId -> Set<facilityId>, so re-entering the same city doesn't re-render what's already there
+	let currentPlayerToolId = 0;
+	let playerActionStatus = '';
+	let engineStatsPanel = null;
+	const cityCharters = new Map(); // cityId -> mutable TownCharter, one per AUTOMATED city
+
+	function updateEngineStatsPanel ( city ) {
+
+		if ( ! engineStatsPanel ) return;
+
+		let residential = 0, commercial = 0, industrial = 0;
+		for ( const facility of city.facilities.values() ) {
+
+			// facility.lot.zoneType is the authoritative R/C/I classification -
+			// not inferred from archetype id, which would silently drift as
+			// DefaultRecipes.js content changes.
+			if ( facility.lot.zoneType === ZoneType.RESIDENTIAL ) residential ++;
+			else if ( facility.lot.zoneType === ZoneType.COMMERCIAL ) commercial ++;
+			else if ( facility.lot.zoneType === ZoneType.INDUSTRIAL ) industrial ++;
+
+		}
+
+		let activeShipments = 0, shipmentsDelivered = 0;
+		for ( const shipment of region.shipments.values() ) {
+
+			const originInCity = city.facilities.has( shipment.originFacilityId );
+			const destInCity = city.facilities.has( shipment.destinationFacilityId );
+			if ( ! originInCity && ! destInCity ) continue;
+
+			if ( shipment.state === ShipmentState.IN_TRANSIT ) activeShipments ++;
+			else if ( shipment.state === ShipmentState.DELIVERED ) shipmentsDelivered ++;
+
+		}
+
+		const controlMode = city.controlMode === ControlMode.MANAGED ? 'MANAGED' : 'AUTOMATED';
+
+		engineStatsPanel.update( {
+			title: `${ city.name } (${ region.name })`,
+			controlMode,
+			treasury: region.nationalBudget.treasury,
+			cityAllocation: city.budget ? city.budget.allocation : null,
+			facilityCounts: { residential, commercial, industrial },
+			activeShipments,
+			shipmentsDelivered,
+		} );
+
+		engineStatsPanel.pannels.Budget.update( {
+			treasury: region.nationalBudget.treasury,
+			cityAllocation: city.budget ? city.budget.allocation : null,
+			spend: city.budget ? city.budget.spend : null,
+		} );
+
+		engineStatsPanel.pannels.Economy.update( {
+			controlMode,
+			charter: cityCharters.get( city.id ) || null,
+		} );
+
+		const ordinances = [
+			{
+				id: OrdinanceId.PRIORITY_FUNDING, name: 'Priority Funding',
+				description: 'Boosts this city\'s share of national treasury allocation (1.5x weight), at every other city\'s expense.',
+				active: ordinanceTool.isEnabled( city, OrdinanceId.PRIORITY_FUNDING ),
+			},
+			{
+				id: OrdinanceId.EXPORT_TARIFF, name: 'Export Tariff',
+				description: 'Increases the production tax revenue this city sends to the national treasury (1.5x).',
+				active: ordinanceTool.isEnabled( city, OrdinanceId.EXPORT_TARIFF ),
+			},
+		];
+
+		engineStatsPanel.updateAll( {
+			eval: evaluateCity( city, region ),
+			ordinances,
+			awards: achievementTracker.all(),
+			history: cityHistory.samplesFor( city.id ),
+			disaster: disruptionTool.activeDisruptions( region ),
+		} );
+
+	}
+
+	function buildEmptyRegion ( id, name ) {
+
+		const r = new RegionState( id, name );
+		for ( const rt of DefaultResourceTypes ) r.resources.register( rt );
+		for ( const rt of DefaultProcessedResourceTypes ) r.resources.register( rt );
+		for ( const recipe of DefaultRecipes ) r.recipes.register( recipe );
+		return r;
+
+	}
+
+	function saveToLocalStorage () {
+
+		try {
+
+			const payload = { region: serializeRegion( region ), orchestrator: serializeOrchestrator( orchestrator ) };
+			localStorage.setItem( SAVE_KEY, JSON.stringify( payload ) );
+			return `saved (region tick ${ region.tick })`;
+
+		} catch ( err ) {
+
+			console.error( err );
+			return `save failed: ${ err.message }`;
+
+		}
+
+	}
+
+	// Rebuilds region/orchestrator from scratch and swaps this preview's
+	// live references - View.js/Hub have no way to "patch" an existing
+	// scene onto a different RegionState, so a load re-enters the active
+	// city fresh, the same rebuild-per-entry approach already used for
+	// switching between different cities. cityHistory/achievementTracker/
+	// ordinanceTool/disruptionTool are deliberately NOT recreated: they
+	// take region/city as call-time arguments rather than holding stored
+	// references, so the exact same instances keep working against the
+	// newly-loaded region - which is also the right behavior, not just the
+	// easy one: achievement progress and recorded history should survive
+	// a load, not silently reset.
+	function loadFromLocalStorage () {
+
+		const raw = localStorage.getItem( SAVE_KEY );
+		if ( ! raw ) return 'no save found';
+
+		try {
+
+			const payload = JSON.parse( raw );
+
+			const freshRegion = buildEmptyRegion( payload.region.id, payload.region.name );
+			applyRegionSnapshot( freshRegion, payload.region );
+
+			const freshOrchestrator = new RegionOrchestrator( freshRegion, {
+				seed: 1, automatedTickInterval: 2, maxLotsPerAutomatedTick: 4,
+				charterFor: city => cityCharters.get( city.id ) || DefaultTownCharter,
+			} );
+			applyOrchestratorSnapshot( freshOrchestrator, payload.orchestrator );
+
+			// TownCharterTool's per-city growth weights aren't part of
+			// RegionState/CityState today (a documented scope cut - see
+			// RENDERER_INTEGRATION_FINDINGS.md) - every AUTOMATED city's
+			// charter resets to the default on load, same as a brand-new
+			// region gets in run() below.
+			cityCharters.clear();
+			for ( const city of freshRegion.cities.values() ) {
+				if ( city.controlMode === ControlMode.AUTOMATED ) cityCharters.set( city.id, { ...DefaultTownCharter } );
+			}
+
+			region = freshRegion;
+			orchestrator = freshOrchestrator;
+			renderedFacilityIdsByCity.clear(); // old bookkeeping referred to the discarded region's Facility objects
+
+			const cityIdToReenter = activeCityId;
+			if ( mode === 'city' && cityIdToReenter && region.cities.has( cityIdToReenter ) ) {
+
+				leaveCity();
+				enterCity( cityIdToReenter ).then( () => {
+					// The fresh Hub_EngineStats built by enterCity() has its own
+				// fresh Save/Load panel, whose DOM (including .status) is
+				// only built lazily on first open() - if the player hasn't
+				// reopened it yet by the time this resolves, there's
+				// nothing to write the confirmation into, and that's fine.
+				if ( engineStatsPanel && engineStatsPanel.pannels.Files.status ) {
+					engineStatsPanel.pannels.Files.status.textContent = `loaded (region tick ${ freshRegion.tick })`;
+				}
+				} );
+
+			}
+
+			return 'loading...';
+
+		} catch ( err ) {
+
+			console.error( err );
+			return `load failed: ${ err.message }`;
+
+		}
+
+	}
+
+	function syncCityBuildings ( city ) {
+
+		if ( mode !== 'city' || activeCityId !== city.id ) return 0;
+
+		let rendered = renderedFacilityIdsByCity.get( city.id );
+		if ( ! rendered ) { rendered = new Set(); renderedFacilityIdsByCity.set( city.id, rendered ); }
+
+		let count = 0;
+		for ( const lot of city.lots ) {
+
+			if ( lot.facility === null || rendered.has( lot.facility.id ) ) continue;
+			const toolId = TOOL_ID[ lot.zoneType ];
+			if ( toolId === undefined ) continue;
+
+			AppState.view3d.selectTool( toolId );
+			AppState.view3d.build( lot.x, lot.y );
+			rendered.add( lot.facility.id );
+			count ++;
+
+		}
+
+		if ( count > 0 ) AppState.view3d.selectTool( currentPlayerToolId );
+		return count;
+
+	}
+
+	function handlePlayerSelectTool ( id ) {
+		currentPlayerToolId = id;
+		AppState.view3d.selectTool( id );
+	}
+
+	function handlePlayerMapClick ( toolName ) {
+
+		const city = region.cities.get( activeCityId );
+		if ( ! city ) return;
+
+		if ( toolName === 'bulldozer' ) {
+			const lot = city.lotAt( AppState.view3d.raypos.x, AppState.view3d.raypos.z );
+			if ( ! lot || ! lot.isDeveloped ) { playerActionStatus = 'nothing to demolish here'; return; }
+			const facility = city.facilities.get( lot.occupiedBy );
+			const removed = orchestrator.bulldozeTool.demolish( city, lot );
+			renderedFacilityIdsByCity.get( city.id )?.delete( removed.id );
+			AppState.view3d.build( facility.lot.x, facility.lot.y );
+			playerActionStatus = `demolished ${ removed.archetypeId }`;
+			return;
+		}
+
+		const zoneType = ZONE_TYPE_FOR_TOOL_NAME[ toolName ];
+		if ( ! zoneType ) { playerActionStatus = `"${ toolName }" isn't modeled by src/engine yet`; return; }
+
+		const lot = city.lotAt( AppState.view3d.raypos.x, AppState.view3d.raypos.z );
+		if ( ! lot ) { playerActionStatus = 'out of bounds'; return; }
+		if ( lot.terrain === TerrainType.WATER ) { playerActionStatus = 'cannot zone water'; return; }
+		if ( lot.isDeveloped ) { playerActionStatus = 'lot already developed'; return; }
+
+		if ( city.controlMode !== ControlMode.MANAGED ) { playerActionStatus = `${ city.name } is AUTOMATED - it grows on its own, not by direct player zoning`; return; }
+
+		const facility = orchestrator.zoningTool.zone( city, lot, zoneType, availableResourceIds( region ) );
+		playerActionStatus = facility
+			? `zoned (${ toolName }) and resolved immediately as ${ facility.archetypeId }`
+			: `zoned (${ toolName }) - waiting on resources or funding to resolve`;
+
+		syncCityBuildings( city );
+
+	}
+
+	let entering = false;
+
+	async function enterCity ( cityId ) {
+
+		if ( entering ) return; // ignore a second click while one entry is already in flight
+		const city = region.cities.get( cityId );
+		if ( ! city ) return;
+		entering = true;
+
+		// A second real race, distinct from the initRenderer() one below:
+		// switching from an ALREADY-active city straight to a different
+		// one (not just the first-ever entry) leaves activeCityId
+		// pointing at the OLD city while AppState.view3d is about to be
+		// reassigned to a fresh, not-yet-initialized instance a few lines
+		// down. If tickSim()'s interval lands in that window, its
+		// mode==='city' && activeCityId guard still passes (both are
+		// still set from the previous city), so it calls
+		// syncCityBuildings() -> view3d.selectTool() against the NEW
+		// View before initRenderer() has created its `tool` object -
+		// throwing every time. Clearing activeCityId immediately closes
+		// this window too, not just the later initRenderer() await.
+		activeCityId = null;
+
+		regionAnimating = false;
+		document.getElementById( 'regionCanvasHost' ).style.display = 'none';
+		document.getElementById( 'backButton' ).style.display = 'block';
+
+		status( `entering ${ city.name } (${ city.controlMode })...` );
+
+		// Best-effort cleanup of the previous city-mode DOM before
+		// building fresh - see the note above on why this preview always
+		// rebuilds rather than reusing a View instance across cities.
+		document.getElementById( 'container' ).innerHTML = '';
+		document.getElementById( 'hub' ).innerHTML = '';
+
+		// #container/#hub must be visible (real, non-zero layout size)
+		// BEFORE initRenderer() runs, not after - a real bug this preview
+		// hit during testing: initRenderer() sizes the renderer/camera
+		// off the container's current dimensions, and #container starts
+		// display:none (see the <style> block), so leaving it hidden
+		// through initRenderer() baked in degenerate (0-sized) geometry
+		// that surfaced as NaN bounding-box warnings on the water plane
+		// even after the container was shown afterward - showing it too
+		// late doesn't trigger a resize/recompute on its own.
+		document.getElementById( 'container' ).style.display = 'block';
+		document.getElementById( 'hub' ).style.display = 'block';
+
+		AppState.hub = new Hub();
+		AppState.view3d = new View();
+		AppState.main = {
+			start () {},
+			sendTool () {},
+			setSpeed () {},
+			destroy () {},
+			selectTool: handlePlayerSelectTool,
+			mapClick: handlePlayerMapClick,
+		};
+
+		await AppState.view3d.initRenderer();
+
+		// Only now is it safe for tickSim()'s background interval to
+		// touch AppState.view3d - flipping mode/activeCityId here rather
+		// than before the await closes a separate real race this preview
+		// also hit during testing: a tick firing mid-await called
+		// selectTool() on a View instance whose this.tool didn't exist
+		// yet (initRenderer() hadn't finished), throwing on every such
+		// tick. DOM visibility and mode/activeCityId timing are two
+		// different concerns with two different correct answers - shown
+		// early, flagged active late.
+		mode = 'city';
+		activeCityId = cityId;
+
+		AppState.tilesData = buildCityTilesData( city );
+		AppState.view3d.paintMap( [ city.width, city.height ], false );
+		AppState.view3d.clearIntro();
+		AppState.hub.start();
+		AppState.hub.initGameHub();
+
+		// The default Hub_Top (population/money/score/happiness) is never
+		// fed data here - it has nothing engine-shaped to show (see the
+		// cutover-research findings) - so its docked panels are hidden
+		// rather than left showing frozen "0" placeholders that would
+		// visually clash with Hub_EngineStats below. Hub_Top.js itself is
+		// untouched; this only hides DOM elements this preview already
+		// owns a reference to via AppState.hub.topHub.
+		if ( AppState.hub.topHub ) {
+			AppState.hub.topHub.content0.style.display = 'none';
+			AppState.hub.topHub.content.style.display = 'none';
+			AppState.hub.topHub.content2.style.display = 'none';
+		}
+
+		document.getElementById( 'status' ).style.display = 'none';
+		engineStatsPanel = new Hub_EngineStats( AppState.hub );
+		engineStatsPanel.pannels.Ordinances.onToggle = ( ordinanceId ) => {
+			ordinanceTool.toggle( city, ordinanceId );
+			updateEngineStatsPanel( city );
+		};
+		engineStatsPanel.pannels.Disaster.onDisruptFacility = () => {
+			const active = Array.from( city.facilities.values() ).filter( f => f.disruptedUntilTick === null );
+			if ( active.length === 0 ) return;
+			disruptionTool.disruptFacility( region, active[ Math.floor( Math.random() * active.length ) ] );
+			updateEngineStatsPanel( city );
+		};
+		engineStatsPanel.pannels.Disaster.onDisruptCorridor = () => {
+			const corridors = region.corridorsFor( city.id ).filter( c => c.disruptedUntilTick === null );
+			if ( corridors.length === 0 ) return;
+			disruptionTool.disruptCorridor( region, corridors[ Math.floor( Math.random() * corridors.length ) ] );
+			updateEngineStatsPanel( city );
+		};
+		engineStatsPanel.pannels.Files.onSave = saveToLocalStorage;
+		engineStatsPanel.pannels.Files.onLoad = loadFromLocalStorage;
+		engineStatsPanel.onPanelOpen = () => updateEngineStatsPanel( city );
+		updateEngineStatsPanel( city );
+
+		const built = syncCityBuildings( city );
+
+		AppState.view3d.center.x = city.width / 2;
+		AppState.view3d.center.z = city.height / 2;
+		AppState.view3d.cam.distance = Math.max( city.width, city.height ) * 1.4;
+		AppState.view3d.moveCamera();
+
+		window.__engineRegionToCityDebug = { region, city, cargoRegistry, orchestrator, mode: () => mode, activeCityId: () => activeCityId };
+
+		entering = false;
+
+	}
+
+	function leaveCity () {
+
+		mode = 'region';
+		activeCityId = null;
+		document.getElementById( 'container' ).style.display = 'none';
+		document.getElementById( 'hub' ).style.display = 'none';
+		document.getElementById( 'regionCanvasHost' ).style.display = '';
+		document.getElementById( 'backButton' ).style.display = 'none';
+		document.getElementById( 'status' ).style.display = '';
+		engineStatsPanel = null; // the old panel's DOM was already discarded along with #hub's innerHTML on the next enterCity()
+		regionAnimating = true;
+		animateRegion();
+		status( 'back to region view' );
+
+	}
+
+	document.getElementById( 'backButton' ).addEventListener( 'click', leaveCity );
+
+	// --- Simulation loop, runs regardless of which mode is showing -
+	// automated/managed growth elsewhere in the region keeps happening
+	// while the player examines one city up close, same as the design
+	// intent (COUNTRY_SIM_ENGINE_PLAN's "lighter automated oversight"). ---
+
+	let tickCount = 0;
+
+	function tickSim () {
+
+		orchestrator.tick();
+		tickCount ++;
+		updateCorridorColors();
+
+		// Region-wide observability - always runs regardless of mode, same
+		// as orchestrator.tick() itself, so History/Awards reflect activity
+		// in cities the player isn't currently looking at.
+		cityHistory.record( region );
+		achievementTracker.check( region );
+
+		if ( mode === 'city' && activeCityId ) {
+			const city = region.cities.get( activeCityId );
+			if ( city ) { syncCityBuildings( city ); updateEngineStatsPanel( city ); }
+		}
+
+		const all = Array.from( region.shipments.values() );
+		const summary = {
+			mode, activeCityId,
+			tick: tickCount,
+			cities: region.cities.size,
+			corridors: region.corridors.size,
+			totalFacilities: Array.from( region.cities.values() ).reduce( ( n, c ) => n + c.facilities.size, 0 ),
+			shipmentsCreated: all.length,
+			shipmentsInTransit: all.filter( s => s.state === ShipmentState.IN_TRANSIT ).length,
+			shipmentsDelivered: all.filter( s => s.state === ShipmentState.DELIVERED ).length,
+			treasury: Math.round( region.nationalBudget.treasury * 10 ) / 10,
+			playerActionStatus,
+		};
+
+		if ( mode === 'region' ) document.getElementById( 'status' ).textContent = JSON.stringify( summary );
+		window.__engineRegionToCityReady = summary;
+
+	}
+
+	async function run () {
+
+		try {
+
+			status( 'generating region (RegionMapGenerator, real multi-city network)...' );
+			region = new RegionState( 'preview-region', 'Preview Region' );
+			for ( const rt of DefaultResourceTypes ) region.resources.register( rt );
+			for ( const rt of DefaultProcessedResourceTypes ) region.resources.register( rt );
+			for ( const recipe of DefaultRecipes ) region.recipes.register( recipe );
+
+			new RegionMapGenerator( 1, {
+				nodeCount: 6,
+				width: REGION_SIZE,
+				height: REGION_SIZE,
+				minSpacing: 40,
+				citySize: { width: 40, height: 40 },
+			} ).generate( region );
+
+			// Each AUTOMATED city gets its own mutable copy of the default
+			// charter (DefaultTownCharter itself is frozen) - this is the
+			// real object the Economy panel's sliders write into, and the
+			// exact object charterFor(city) hands back to the
+			// orchestrator every automated-growth tick. Not a display
+			// copy of a lever that does nothing - the actual lever.
+			for ( const city of region.cities.values() ) {
+				if ( city.controlMode === ControlMode.AUTOMATED ) cityCharters.set( city.id, { ...DefaultTownCharter } );
+			}
+
+			orchestrator = new RegionOrchestrator( region, {
+				seed: 1,
+				automatedTickInterval: 2,
+				maxLotsPerAutomatedTick: 4,
+				charterFor: city => cityCharters.get( city.id ) || DefaultTownCharter,
+			} );
+			cargoRegistry = createDefaultCargoVisualRegistry();
+
+			cityHistory = new CityHistory();
+			achievementTracker = new AchievementTracker( region );
+			ordinanceTool = new OrdinanceTool();
+			disruptionTool = new DisruptionTool( { defaultDuration: 30 } );
+
+			// Managed cities need player zoning to grow (that's the whole
+			// point of the control-mode split) - since this preview's
+			// "player" mostly watches, pre-zone a modest grid in every
+			// MANAGED city so the region isn't visibly lopsided (automated
+			// cities growing, managed ones sitting empty) before anyone
+			// clicks in. Automated cities need no such seeding - the
+			// orchestrator's TownCharterTool already grows them on its own.
+			const resolver = orchestrator.resolver;
+			for ( const city of region.cities.values() ) {
+
+				if ( city.controlMode !== ControlMode.MANAGED ) continue;
+				const zoneCycle = [ ZoneType.RESIDENTIAL, ZoneType.COMMERCIAL, ZoneType.INDUSTRIAL ];
+				let cycleIndex = 0;
+				for ( let y = 3; y < city.height - 3; y += 6 ) {
+					for ( let x = 3; x < city.width - 3; x += 6 ) {
+						const lot = city.lotAt( x, y );
+						if ( ! lot || lot.terrain === TerrainType.WATER || lot.isDeveloped ) continue;
+						lot.zoneType = zoneCycle[ cycleIndex % zoneCycle.length ];
+						cycleIndex ++;
+						const recipe = resolver.resolve( city, lot, new Set( [ 'labor' ] ) );
+						if ( recipe ) developLot( city, lot, recipe );
+					}
+				}
+
+			}
+
+			status( 'initializing region view (real Three.js, dev_engine_region_3d.html\'s proven technique)...' );
+			initRegionScene();
+			buildRegionMeshes();
+
+			setInterval( tickSim, TICK_INTERVAL_MS );
+			tickSim();
+			animateRegion();
+
+			status( 'ready - click a city sphere to enter it' );
+
+		} catch ( err ) {
+
+			status( 'ERROR: ' + err.message );
+			window.__engineRegionToCityReady = { ok: false, error: err.message, stack: err.stack };
+			console.error( err );
+
+		}
+
+	}
+
+	run();
+
+	// Exposed so the click-to-enter flow (real mouse raycasting, already
+	// proven by every prior interactive preview) can also be driven
+	// programmatically for automated verification, same pattern as
+	// dev_engine_view3d_vehicles.html's AppState.main hooks.
+	window.__enterCityForTest = enterCity;
+	window.__leaveCityForTest = leaveCity;
+
+</script>
+
+<div id="regionCanvasHost"></div>
+<div id="container"></div>
+<div id="hub"></div>
+<div id="status">starting...</div>
+<div id="instructions">Region view: click a glowing sphere to enter that city (blue = MANAGED, green = AUTOMATED). Inside a city, use the real BUILD panel to zone/bulldoze if it's MANAGED - AUTOMATED cities grow on their own. Region-wide simulation keeps running even while you're inside a city.</div>
+<div id="backButton">&larr; Back to region</div>
+
+</body></html>

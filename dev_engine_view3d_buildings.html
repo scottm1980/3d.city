@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine real-renderer buildings preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+<link type="text/css" rel="stylesheet" href="index.css">
+</head>
+<style>
+#status { position:absolute; left:10px; top:10px; z-index:10; font:12px monospace; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; }
+</style>
+<script type="module">
+	// Sixth dev preview, extending dev_engine_view3d.html to buildings -
+	// a genuinely different integration path than terrain. Per
+	// RENDERER_INTEGRATION_FINDINGS.md's protocol research, the "MESH
+	// BUILD" tile range (>=240) is NOT driven by tilesData values the way
+	// water/ground/trees are - it's driven by direct method calls
+	// (view3d.build(x, y)) using whichever tool is selected
+	// (view3d.selectTool(id)), reading a small fixed catalog
+	// (Base.toolSet, MIT code in src/city3d/Base.js) of ~13 building
+	// model variants. Still never calls Main.init()/boots a Worker/loads
+	// GPL CityGame.js.
+	//
+	// Base.toolSet's building tools use a fixed 3x3 footprint centered on
+	// (x,y) (confirmed by reading Base.js's Zone() function, MIT code).
+	// src/engine now knows about this too (Recipe.footprintSize,
+	// ZoneResolver's footprint-clearance check, developLot() claiming the
+	// whole footprint via Lot.occupiedBy) - so this harness deliberately
+	// attempts a DENSE, overlap-prone candidate grid (every 2 tiles) to
+	// prove the engine itself rejects placements that would overlap,
+	// rather than sidestepping the problem with pre-spaced candidates.
+	import { View } from './src/city3d/View.js';
+	import { Hub } from './src/city3d/Hub.js';
+	import { AppState } from './src/AppState.js';
+
+	import { CityState, ControlMode } from './src/engine/world/CityState.js';
+	import { CityMapGenerator } from './src/engine/worldgen/CityMapGenerator.js';
+	import { TerrainType } from './src/engine/worldgen/Terrain.js';
+	import { RegionState } from './src/engine/world/RegionState.js';
+	import { ZoneType } from './src/engine/world/ZoneType.js';
+	import { ZoneResolver, geographicResourceIds, developLot } from './src/engine/resolution/ZoneResolver.js';
+	import { DefaultResourceTypes, DefaultResourceRules } from './src/engine/worldgen/DefaultResources.js';
+	import { DefaultRecipes, DefaultProcessedResourceTypes } from './src/engine/resolution/DefaultRecipes.js';
+
+	const TILE_WATER = 2;      // Tile.RIVER
+	const TILE_GROUND = 0;     // Tile.DIRT
+	const TILE_TREE_BASE = 21; // Tile.TREEBASE
+
+	// Base.toolSet ids for the three zone-type building tools (read
+	// directly from src/city3d/Base.js, MIT code).
+	const TOOL_ID = {
+		[ ZoneType.RESIDENTIAL ]: 1, // 'residential', geo:1, size:3
+		[ ZoneType.COMMERCIAL ]:  2, // 'commercial',  geo:2, size:3
+		[ ZoneType.INDUSTRIAL ]:  3, // 'industrial',  geo:3, size:3
+	};
+	const CANDIDATE_SPACING = 2; // deliberately dense/overlap-prone (footprints are 3x3) - the engine's own clearance check should reject the overlaps, not this harness
+	const EDGE_MARGIN = 2;
+
+	function status ( text ) {
+		document.getElementById( 'status' ).textContent = text;
+	}
+
+	function treeVariant ( lot ) {
+		return TILE_TREE_BASE + ( ( lot.x * 7 + lot.y * 13 ) % 8 );
+	}
+
+	function buildTilesData ( city ) {
+
+		const data = new Float32Array( city.width * city.height );
+
+		for ( const lot of city.lots ) {
+
+			const n = lot.x + lot.y * city.width;
+
+			if ( lot.terrain === TerrainType.WATER ) data[ n ] = TILE_WATER;
+			else if ( lot.terrain === TerrainType.FOREST ) data[ n ] = treeVariant( lot );
+			else data[ n ] = TILE_GROUND;
+
+		}
+
+		return data;
+
+	}
+
+	// Dense, deliberately overlap-prone candidate grid - the engine's own
+	// footprint-clearance check (inside resolve()) is what should reject
+	// candidates that would overlap an already-placed building, not any
+	// spacing logic in this harness.
+	function placeBuildings ( city, region, resolver ) {
+
+		const zoneCycle = [ ZoneType.RESIDENTIAL, ZoneType.COMMERCIAL, ZoneType.INDUSTRIAL ];
+		const available = new Set( [ 'labor', 'iron_ore', 'coal', 'timber', 'grain', 'fish', 'oil' ] ); // permissive - this test is about rendering, not re-proving Tier 3/4 gating
+		const placed = [];
+		let cycleIndex = 0;
+		let attempted = 0;
+		let rejectedByFootprint = 0;
+
+		for ( let y = EDGE_MARGIN; y < city.height - EDGE_MARGIN; y += CANDIDATE_SPACING ) {
+
+			for ( let x = EDGE_MARGIN; x < city.width - EDGE_MARGIN; x += CANDIDATE_SPACING ) {
+
+				const lot = city.lotAt( x, y );
+				if ( ! lot || lot.terrain === TerrainType.WATER || lot.isDeveloped ) continue;
+
+				attempted ++;
+				const zoneType = zoneCycle[ cycleIndex % zoneCycle.length ];
+				cycleIndex ++;
+
+				lot.zoneType = zoneType;
+				const recipe = resolver.resolve( city, lot, available );
+				if ( ! recipe ) { rejectedByFootprint ++; continue; } // stays zoned but undeveloped - either no clearance or, less likely here, unsatisfiable inputs
+
+				const facility = developLot( city, lot, recipe );
+				placed.push( { x, y, zoneType, archetypeId: facility.archetypeId } );
+
+			}
+
+		}
+
+		return { placed, attempted, rejectedByFootprint };
+
+	}
+
+	async function run () {
+
+		try {
+
+			status( 'generating city + zoning a dense, overlap-prone building grid...' );
+			const size = 96;
+			const city = new CityState( 'preview', 'Preview', { width: size, height: size, controlMode: ControlMode.MANAGED } );
+			new CityMapGenerator( 1 ).generate( city );
+
+			const region = new RegionState( 'preview-region', 'Preview Region' );
+			for ( const rt of DefaultResourceTypes ) region.resources.register( rt );
+			for ( const rt of DefaultProcessedResourceTypes ) region.resources.register( rt );
+			for ( const recipe of DefaultRecipes ) region.recipes.register( recipe );
+			region.addCity( city );
+
+			const resolver = new ZoneResolver( region.recipes, geographicResourceIds( DefaultResourceRules ) );
+			const { placed, attempted, rejectedByFootprint } = placeBuildings( city, region, resolver );
+
+			// Verify no two placed facilities' footprints actually overlap -
+			// the real correctness check for this fix, not just a render count.
+			const claimedTiles = new Map(); // "x,y" -> facility id
+			let overlapCount = 0;
+			for ( const facility of city.facilities.values() ) {
+				for ( const footprintLot of facility.footprint ) {
+					const key = footprintLot.x + ',' + footprintLot.y;
+					if ( claimedTiles.has( key ) ) overlapCount ++;
+					claimedTiles.set( key, facility.id );
+				}
+			}
+
+			const tilesData = buildTilesData( city );
+
+			status( 'constructing real View/Hub (no Worker, no CityGame.js)...' );
+			AppState.hub = new Hub();
+			AppState.view3d = new View();
+			AppState.main = { start () {}, sendTool () {} };
+
+			status( 'initRenderer()...' );
+			await AppState.view3d.initRenderer();
+
+			status( 'paintMap()...' );
+			AppState.tilesData = tilesData;
+			AppState.view3d.paintMap( [ size, size ], false );
+			AppState.view3d.clearIntro();
+			// See dev_shoreline research: AppState.hub.start() (not just
+			// clearIntro()) is what actually fades out and removes the
+			// loading overlay - Main.start() would normally trigger it.
+			AppState.hub.start();
+
+			status( `placing ${ placed.length } buildings via real selectTool()/build()...` );
+			let builtCount = 0;
+			for ( const p of placed ) {
+
+				const toolId = TOOL_ID[ p.zoneType ];
+				if ( toolId === undefined ) continue;
+
+				AppState.view3d.selectTool( toolId );
+				AppState.view3d.build( p.x, p.y );
+				builtCount ++;
+
+			}
+
+			status( 'done' );
+			window.__engineView3DBuildingsReady = {
+				ok: true,
+				size,
+				candidateGridAttempts: attempted,
+				resolvedFacilities: placed.length,
+				rejectedByFootprintClearance: rejectedByFootprint,
+				builtCount,
+				overlapCount, // must be 0 - the actual correctness check for this fix
+				zoneBreakdown: placed.reduce( ( acc, p ) => { acc[ p.zoneType ] = ( acc[ p.zoneType ] || 0 ) + 1; return acc; }, {} ),
+			};
+
+		} catch ( err ) {
+
+			status( 'ERROR: ' + err.message );
+			window.__engineView3DBuildingsReady = { ok: false, error: err.message, stack: err.stack };
+			console.error( err );
+
+		}
+
+	}
+
+	run();
+
+</script>
+
+<div id="container"></div>
+<div id="hub"></div>
+<div id="status">starting...</div>
+
+</body></html>

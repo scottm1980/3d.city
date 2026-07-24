@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>engine real-renderer vehicles preview</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<link rel="icon" href="favicon.ico" />
+<link type="text/css" rel="stylesheet" href="index.css">
+</head>
+<style>
+#status { position:absolute; left:10px; top:10px; z-index:10; font:12px monospace; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; max-width:90%; }
+#instructions { position:absolute; left:10px; top:56px; z-index:10; font:12px sans-serif; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; max-width:360px; }
+</style>
+<script type="module">
+	// Seventh dev preview: ports the multi-city/vehicle work proven in
+	// dev_engine_region_3d.html (a standalone Three.js scene) into the
+	// REAL View.js scene instead - the actual ask after
+	// dev_engine_view3d_buildings.html proved single-city terrain and
+	// buildings. Still never calls Main.init()/boots a Worker/loads GPL
+	// CityGame.js.
+	//
+	// View.js's internal state (this.land, mapSize, AppState.tilesData)
+	// is fundamentally single-map-shaped - there's no "second city" slot
+	// to render into without refactoring View.js itself, which this pass
+	// deliberately does not attempt. Instead: two real cities are placed
+	// side by side inside ONE combined tilesData grid (a gap of plain
+	// ground between them stands in for the corridor), so View.js renders
+	// both with its completely unmodified, real terrain/building
+	// pipeline. A real 2-city RegionState (CorridorEdge, TradeResolver,
+	// RegionOrchestrator - all proven Tier 1-7 code) drives an actual
+	// mine-city/mill-city trade scenario, and every in-transit cross-city
+	// Shipment is rendered as an InstancedMesh instance added directly to
+	// view3d.scene, colored by Tier 6's cargo visuals - the same
+	// mechanism verified in dev_engine_region_3d.html, now live in the
+	// real renderer's own scene graph instead of a standalone one.
+	import { View } from './src/city3d/View.js';
+	import { Hub } from './src/city3d/Hub.js';
+	import { AppState } from './src/AppState.js';
+	import * as THREE from './src/three/three.module.js';
+
+	import { CityState, ControlMode } from './src/engine/world/CityState.js';
+	import { CityMapGenerator } from './src/engine/worldgen/CityMapGenerator.js';
+	import { TerrainType } from './src/engine/worldgen/Terrain.js';
+	import { ResourceEndowment } from './src/engine/world/ResourceEndowment.js';
+	import { RegionState } from './src/engine/world/RegionState.js';
+	import { CorridorEdge } from './src/engine/world/CorridorEdge.js';
+	import { ZoneType } from './src/engine/world/ZoneType.js';
+	import { ZoneResolver, geographicResourceIds, developLot, footprintTiles } from './src/engine/resolution/ZoneResolver.js';
+	import { DefaultResourceTypes, DefaultResourceRules } from './src/engine/worldgen/DefaultResources.js';
+	import { DefaultRecipes, DefaultProcessedResourceTypes } from './src/engine/resolution/DefaultRecipes.js';
+	import { RegionOrchestrator } from './src/engine/orchestrator/RegionOrchestrator.js';
+	import { availableResourceIds } from './src/engine/trade/TradeResolver.js';
+	import { createDefaultCargoVisualRegistry } from './src/engine/visuals/DefaultCargoVisuals.js';
+	import { visualForShipment, ModelVariant } from './src/engine/visuals/CargoVisual.js';
+	import { ShipmentState } from './src/engine/trade/Shipment.js';
+	import { FacilityStatus } from './src/engine/world/Facility.js';
+
+	const TILE_WATER = 2;
+	const TILE_GROUND = 0;
+	const TILE_TREE_BASE = 21;
+	const TOOL_ID = { [ZoneType.RESIDENTIAL]: 1, [ZoneType.COMMERCIAL]: 2, [ZoneType.INDUSTRIAL]: 3 };
+	const ZONE_TYPE_FOR_TOOL_NAME = { residential: ZoneType.RESIDENTIAL, commercial: ZoneType.COMMERCIAL, industrial: ZoneType.INDUSTRIAL };
+
+	const CITY_SIZE = 40;
+	const GAP = 24;
+	const COMBINED_W = CITY_SIZE * 2 + GAP;
+	const COMBINED_H = CITY_SIZE;
+	const MILL_OFFSET_X = CITY_SIZE + GAP;
+
+	function status ( s ) { document.getElementById( 'status' ).textContent = s; }
+	function treeVariant ( x, y ) { return TILE_TREE_BASE + ( ( x * 7 + y * 13 ) % 8 ); }
+	function hexToThreeColor ( hex ) { return new THREE.Color( ( (hex>>16)&255 )/255, ( (hex>>8)&255 )/255, (hex&255)/255 ); }
+
+	// --- Simulation: a real 2-city RegionState, mine city -> mill city ---
+
+	function buildSimulation () {
+
+		const region = new RegionState( 'preview-region', 'Preview Region' );
+		for ( const rt of DefaultResourceTypes ) region.resources.register( rt );
+		for ( const rt of DefaultProcessedResourceTypes ) region.resources.register( rt );
+		for ( const recipe of DefaultRecipes ) region.recipes.register( recipe );
+
+		const mineCity = new CityState( 'mine', 'Ironhaven', { width: CITY_SIZE, height: CITY_SIZE, controlMode: ControlMode.AUTOMATED, regionPosition: { x: CITY_SIZE/2, y: CITY_SIZE/2 } } );
+		const millCity = new CityState( 'mill', 'Steeltown', { width: CITY_SIZE, height: CITY_SIZE, controlMode: ControlMode.MANAGED, regionPosition: { x: CITY_SIZE*2 + GAP - CITY_SIZE/2, y: CITY_SIZE/2 } } );
+
+		new CityMapGenerator( 1 ).generate( mineCity );
+		new CityMapGenerator( 2 ).generate( millCity );
+
+		// Guarantee the mine city actually has iron_ore + coal, same
+		// reliability trick as the original Tier 4 test - procedural
+		// placement is real but not guaranteed to land exactly where a
+		// small demo city needs it.
+		mineCity.lotAt( 5, 5 ).resourceEndowment = new ResourceEndowment( 'iron_ore', 1 );
+		mineCity.lotAt( 5, 5 ).terrain = TerrainType.MOUNTAIN;
+		mineCity.lotAt( 10, 5 ).resourceEndowment = new ResourceEndowment( 'coal', 1 );
+		mineCity.lotAt( 10, 5 ).terrain = TerrainType.HILLS;
+
+		region.addCity( mineCity );
+		region.addCity( millCity );
+		region.addCorridor( new CorridorEdge( 'road1', mineCity.id, millCity.id, { distance: GAP + CITY_SIZE, capacity: 30 } ) );
+
+		const resolver = new ZoneResolver( region.recipes, geographicResourceIds( DefaultResourceRules ) );
+
+		// Zone the guaranteed resource lots first so the mine/coal
+		// facilities exist from tick 1.
+		for ( const [ lx, ly ] of [ [5,5], [10,5] ] ) {
+			const lot = mineCity.lotAt( lx, ly );
+			lot.zoneType = ZoneType.INDUSTRIAL;
+			const recipe = resolver.resolve( mineCity, lot, new Set() );
+			if ( recipe ) developLot( mineCity, lot, recipe );
+		}
+
+		// Same for the steel_mill test lot in Steeltown, and - now that
+		// zoning is budget-gated (see NationalBudget) - force-placed via
+		// developLot() directly rather than resolver.resolve(), for two
+		// reasons that only exist now:
+		// 1. resolve() would always fail here anyway: no iron_ore/coal is
+		//    "available" yet this early (no tick has run to produce any),
+		//    so steel_mill's input-satisfiability check can never pass -
+		//    same reliability-trick spirit as the mine's guaranteed
+		//    ResourceEndowment overrides above, just via a direct
+		//    developLot() instead of a resource override.
+		// 2. Doing this BEFORE fillCity()'s dense grid runs reserves both
+		//    the footprint AND spends the $350 buildCost immediately,
+		//    while Steeltown's founding grant is still intact. Without
+		//    this ordering, fillCity's own candidates (which don't need
+		//    to wait on missing resources) would either claim overlapping
+		//    footprint tiles or simply outspend the steel_mill for funds
+		//    first, and this scenario's whole reason for existing - mine
+		//    ore/coal actually being demanded and shipped to a real mill -
+		//    could get starved indefinitely.
+		millLot = findClearIndustrialSpot( millCity );
+		if ( millLot ) {
+			millLot.zoneType = ZoneType.INDUSTRIAL;
+			const steelMillRecipe = region.recipes.get( 'steel_mill' );
+			if ( steelMillRecipe && millCity.budget.totalFunds >= steelMillRecipe.buildCost ) {
+				developLot( millCity, millLot, steelMillRecipe );
+			}
+		}
+
+		const orchestrator = new RegionOrchestrator( region, { seed: 1, automatedTickInterval: 1, maxLotsPerAutomatedTick: 3 } );
+
+		return { region, mineCity, millCity, resolver, orchestrator, millLot };
+
+	}
+
+	// Finds an actually-clear spot for the steel_mill test lot, rather
+	// than hardcoding a position - fillCity's dense grid may have already
+	// claimed footprints nearby, and footprintTiles() (the same check
+	// resolve() uses) is the honest way to confirm clearance rather than
+	// guessing at a gap.
+	function findClearIndustrialSpot ( city ) {
+
+		for ( const lot of city.lots ) {
+
+			if ( lot.terrain === TerrainType.WATER || lot.isDeveloped ) continue;
+			if ( footprintTiles( city, lot, 3 ) ) return lot;
+
+		}
+
+		return null;
+
+	}
+
+	// Fills the rest of each city (outside the guaranteed resource lots)
+	// with a modest, dense-but-bounded R/C/I grid, reusing the proven
+	// footprint-clearance mechanism - real, not synthetically spaced.
+	function fillCity ( city, region, resolver, zoneCycle ) {
+
+		const available = new Set( [ 'labor' ] );
+		let cycleIndex = 0;
+
+		for ( let y = 3; y < city.height - 3; y += 5 ) {
+			for ( let x = 3; x < city.width - 3; x += 5 ) {
+				const lot = city.lotAt( x, y );
+				if ( ! lot || lot.terrain === TerrainType.WATER || lot.isDeveloped ) continue;
+				lot.zoneType = zoneCycle[ cycleIndex % zoneCycle.length ];
+				cycleIndex ++;
+				const recipe = resolver.resolve( city, lot, available );
+				if ( recipe ) developLot( city, lot, recipe );
+			}
+		}
+
+	}
+
+	// --- Combined tilesData: two real cities side by side, one grid ---
+
+	function buildCombinedTilesData ( mineCity, millCity ) {
+
+		const data = new Float32Array( COMBINED_W * COMBINED_H ).fill( TILE_GROUND );
+
+		function stamp ( city, offsetX ) {
+			for ( const lot of city.lots ) {
+				const wx = lot.x + offsetX, wy = lot.y;
+				const n = wx + wy * COMBINED_W;
+				if ( lot.terrain === TerrainType.WATER ) data[ n ] = TILE_WATER;
+				else if ( lot.terrain === TerrainType.FOREST ) data[ n ] = treeVariant( lot.x, lot.y );
+				else data[ n ] = TILE_GROUND;
+			}
+		}
+
+		stamp( mineCity, 0 );
+		stamp( millCity, CITY_SIZE + GAP );
+
+		return data;
+
+	}
+
+	// Renders every developed-but-not-yet-rendered facility (in either
+	// city) as a real view3d.build() call. Runs at startup and again every
+	// tick, so it covers all three ways a facility can come into being:
+	// the pre-seeded resource lots, RegionOrchestrator's own growth
+	// (automated TownCharterTool, or a managed city's zoningTool.reattempt
+	// picking up a lot whose inputs just arrived), and now direct player
+	// clicks via handlePlayerMapClick(). renderedFacilityIds makes this
+	// idempotent instead of re-building the same lot every tick.
+	const renderedFacilityIds = new Set();
+
+	function syncNewBuildings () {
+
+		let count = 0;
+
+		for ( const [ city, offsetX ] of [ [ mineCity, 0 ], [ millCity, MILL_OFFSET_X ] ] ) {
+
+			for ( const lot of city.lots ) {
+
+				if ( lot.facility === null || renderedFacilityIds.has( lot.facility.id ) ) continue; // only unrendered anchor lots
+				const toolId = TOOL_ID[ lot.zoneType ];
+				if ( toolId === undefined ) continue;
+
+				AppState.view3d.selectTool( toolId );
+				AppState.view3d.build( lot.x + offsetX, lot.y );
+				renderedFacilityIds.add( lot.facility.id );
+				count ++;
+
+			}
+
+		}
+
+		// Building uses view3d.currentTool as an implicit argument
+		// (view3d.build() reads it), so syncing while the player has a
+		// tool selected must not leave a different tool active afterward -
+		// restore whatever the player last picked via the real Hub UI.
+		if ( count > 0 ) AppState.view3d.selectTool( currentPlayerToolId );
+
+		return count;
+
+	}
+
+	// --- Player interaction: the real Hub_Build toolbar + View.js's own
+	// raycasting, driving src/engine's ZoningTool/BulldozeTool instead of
+	// CityGame.js. Only Steeltown (the MANAGED city) accepts direct
+	// zoning/demolition - Ironhaven is AUTOMATED and grows on its own via
+	// TownCharterTool, per the round-2 control-mode decision
+	// src/engine/README.md documents. Tools the engine doesn't model yet
+	// (road, power, services...) are accepted by the real UI but
+	// intentionally no-op rather than crash.
+
+	let currentPlayerToolId = 0;
+	let playerActionStatus = '';
+
+	function handlePlayerSelectTool ( id ) {
+
+		currentPlayerToolId = id;
+		AppState.view3d.selectTool( id );
+
+	}
+
+	function millLocalLotFromRaypos () {
+
+		const lx = AppState.view3d.raypos.x - MILL_OFFSET_X, ly = AppState.view3d.raypos.z;
+		if ( lx < 0 || lx >= CITY_SIZE || ly < 0 || ly >= CITY_SIZE ) return null;
+		return millCity.lotAt( lx, ly );
+
+	}
+
+	function handlePlayerBulldoze () {
+
+		const lot = millLocalLotFromRaypos();
+		if ( ! lot ) { playerActionStatus = 'that tile is outside Steeltown (the managed city) - Ironhaven grows automatically'; return; }
+		if ( ! lot.isDeveloped ) { playerActionStatus = 'nothing to demolish here'; return; }
+
+		// Resolve the facility before removing it (undevelopLot() clears
+		// lot.facility), and drop it from renderedFacilityIds so a future
+		// facility built on these tiles isn't mistaken for already-rendered.
+		const facility = millCity.facilities.get( lot.occupiedBy );
+		const removed = orchestrator.bulldozeTool.demolish( millCity, lot );
+		renderedFacilityIds.delete( removed.id );
+
+		// view3d.build() itself handles the bulldozer case (View.js's own
+		// testDestruct scans the clicked footprint and removes the real
+		// mesh/geometry) - engine state above is already updated, so this
+		// only needs to trigger the matching visual removal, at the real
+		// anchor tile so it works regardless of which footprint tile was
+		// clicked.
+		AppState.view3d.build( facility.lot.x + MILL_OFFSET_X, facility.lot.y );
+
+		playerActionStatus = `demolished ${ removed.archetypeId }`;
+
+	}
+
+	function handlePlayerMapClick ( toolName ) {
+
+		if ( toolName === 'bulldozer' ) { handlePlayerBulldoze(); return; }
+
+		const zoneType = ZONE_TYPE_FOR_TOOL_NAME[ toolName ];
+		if ( ! zoneType ) { playerActionStatus = `"${ toolName }" isn't modeled by src/engine yet - try Residential/Commercial/Industrial, or Bulldozer`; return; }
+
+		const lot = millLocalLotFromRaypos();
+		if ( ! lot ) { playerActionStatus = 'that tile is outside Steeltown (the managed city) - Ironhaven grows automatically'; return; }
+		if ( lot.terrain === TerrainType.WATER ) { playerActionStatus = 'cannot zone water'; return; }
+		if ( lot.isDeveloped ) { playerActionStatus = 'lot already developed'; return; }
+
+		const facility = orchestrator.zoningTool.zone( millCity, lot, zoneType, availableResourceIds( region ) );
+		playerActionStatus = facility
+			? `zoned (${ toolName }) and resolved immediately as ${ facility.archetypeId } (Steeltown funds now $${ millCity.budget.allocation.toFixed( 0 ) })`
+			: `zoned (${ toolName }) - waiting on resources or funding to resolve (Steeltown funds: $${ millCity.budget.allocation.toFixed( 0 ) })`;
+
+		syncNewBuildings();
+
+	}
+
+	// --- Vehicle layer: real InstancedMesh in the real scene, one mesh per
+	// ModelVariant instead of a single shared box. A tinted box proved the
+	// InstancedMesh mechanism; this proves the actual visual gap it left
+	// open - HOPPER/TANKER/FLATBED/REFRIGERATED/VAN/TRANSIT cargo now has a
+	// genuinely different silhouette, not just a different color, matching
+	// what Tier 6's README always meant by "model variant" but the first
+	// port didn't yet render. Geometry is simple primitives (no ripped
+	// assets, nothing GPL-adjacent) chosen to read distinctly at a glance:
+	// a tapered hexagonal hopper car, a horizontal tanker cylinder, a low
+	// flatbed, a boxy refrigerated container, a compact van, and a longer
+	// transit bus shape.
+
+	const VEHICLE_CAPACITY_PER_VARIANT = 40;
+
+	function buildVehicleGeometry ( variant ) {
+
+		switch ( variant ) {
+
+			case ModelVariant.HOPPER: return new THREE.CylinderGeometry( 0.6, 0.35, 1.0, 6 );
+			case ModelVariant.TANKER: return new THREE.CylinderGeometry( 0.45, 0.45, 1.6, 12 ).rotateZ( Math.PI / 2 );
+			case ModelVariant.FLATBED: return new THREE.BoxGeometry( 1.8, 0.35, 0.9 );
+			case ModelVariant.REFRIGERATED: return new THREE.BoxGeometry( 1.3, 1.05, 0.9 );
+			case ModelVariant.VAN: return new THREE.BoxGeometry( 0.95, 0.85, 0.8 );
+			case ModelVariant.TRANSIT: return new THREE.BoxGeometry( 1.6, 0.95, 0.85 );
+			default: return new THREE.BoxGeometry( 1.2, 1.2, 1.2 ); // unknown future variant - still renders
+
+		}
+
+	}
+
+	// One InstancedMesh per variant (all sharing one vertex-colored
+	// material) rather than one mesh per resource, so cargo sharing a
+	// variant still batches - the same GPU-instancing rationale
+	// CargoVisual.js documents, just now expressed as real geometry too.
+	function buildVehicleMeshes () {
+
+		const material = new THREE.MeshStandardMaterial( { vertexColors: true } );
+		const meshes = new Map();
+
+		for ( const variant of Object.values( ModelVariant ) ) {
+
+			const mesh = new THREE.InstancedMesh( buildVehicleGeometry( variant ), material, VEHICLE_CAPACITY_PER_VARIANT );
+			AppState.view3d.scene.add( mesh );
+			meshes.set( variant, mesh );
+
+		}
+
+		return meshes;
+
+	}
+
+	let vehicleMeshes, cargoRegistry, region, mineCity, millCity, orchestrator, resolver;
+	let millLot = null; // set (and force-developed) inside buildSimulation(), before fillCity runs
+	const dummy = new THREE.Object3D();
+	const hiddenMatrix = new THREE.Matrix4().makeScale( 0, 0, 0 );
+
+	function worldAnchor ( city, offsetX ) {
+		return { x: offsetX + city.width / 2, z: city.height / 2 };
+	}
+
+	function updateVehicleInstances () {
+
+		const mineAnchor = worldAnchor( mineCity, 0 );
+		const millAnchor = worldAnchor( millCity, CITY_SIZE + GAP );
+
+		const used = new Map();
+		for ( const variant of vehicleMeshes.keys() ) used.set( variant, 0 );
+
+		for ( const shipment of region.shipments.values() ) {
+
+			if ( shipment.state !== ShipmentState.IN_TRANSIT ) continue;
+			if ( shipment.path.length === 0 ) continue; // intra-city moves aren't spatial here
+
+			const visual = visualForShipment( shipment, cargoRegistry, region.resources );
+			const variant = visual ? visual.modelVariant : ModelVariant.FLATBED;
+			const mesh = vehicleMeshes.get( variant );
+			const i = used.get( variant );
+			if ( ! mesh || i >= VEHICLE_CAPACITY_PER_VARIANT ) continue; // over this variant's per-mesh budget - still simulated, just not rendered
+
+			// Only one corridor exists (mine <-> mill), so progress maps
+			// directly onto the mine-anchor -> mill-anchor segment; a
+			// multi-hop region would need the same segment-walk as
+			// dev_engine_region_3d.html's shipmentPosition().
+			const originIsMine = mineCity.facilities.has( shipment.originFacilityId );
+			const a = originIsMine ? mineAnchor : millAnchor;
+			const b = originIsMine ? millAnchor : mineAnchor;
+			const t = shipment.progress;
+
+			dummy.position.set( a.x + ( b.x - a.x ) * t, 1, a.z + ( b.z - a.z ) * t );
+			dummy.rotation.y = Math.atan2( b.x - a.x, b.z - a.z ); // face direction of travel
+			dummy.scale.set( 1, 1, 1 );
+			dummy.updateMatrix();
+			mesh.setMatrixAt( i, dummy.matrix );
+			mesh.setColorAt( i, visual ? hexToThreeColor( visual.tint ) : new THREE.Color( 0xffffff ) );
+
+			used.set( variant, i + 1 );
+
+		}
+
+		let rendered = 0;
+		const byVariant = {};
+		for ( const [ variant, mesh ] of vehicleMeshes ) {
+
+			const count = used.get( variant );
+			for ( let j = count; j < VEHICLE_CAPACITY_PER_VARIANT; j ++ ) mesh.setMatrixAt( j, hiddenMatrix );
+			mesh.instanceMatrix.needsUpdate = true;
+			if ( mesh.instanceColor ) mesh.instanceColor.needsUpdate = true;
+			byVariant[ variant ] = count;
+			rendered += count;
+
+		}
+
+		return { rendered, byVariant };
+
+	}
+
+	function tickSimulation () {
+
+		orchestrator.tick();
+		// orchestrator.tick() already sweeps every city - including
+		// Steeltown via zoningTool.reattempt() - so a lot zoned but not
+		// immediately resolved (the pre-seeded millLot, or a player's
+		// click) picks up automatically once its inputs arrive; no
+		// separate manual re-check needed here.
+		const builtThisTick = syncNewBuildings();
+
+		const { rendered, byVariant } = updateVehicleInstances();
+
+		const all = Array.from( region.shipments.values() );
+		const summary = {
+			tick: region.tick,
+			mineFacilities: mineCity.facilities.size,
+			millFacilities: millCity.facilities.size,
+			// facility!==null is now trivially true from tick 0 - it's
+			// force-placed (see buildSimulation()) precisely so it's not
+			// starved by budget/footprint races. status===ACTIVE is the
+			// signal that's actually still interesting: it only flips
+			// once real iron_ore+coal shipments have arrived and it's
+			// genuinely produced steel, proving the mine->mill demand
+			// chain worked, not just that the building exists.
+			millSteelMillActive: millLot !== null && millLot.facility !== null && millLot.facility.status === FacilityStatus.ACTIVE,
+			treasury: Math.round( region.nationalBudget.treasury * 10 ) / 10,
+			mineAllocation: Math.round( mineCity.budget.allocation * 10 ) / 10,
+			millAllocation: Math.round( millCity.budget.allocation * 10 ) / 10,
+			shipmentsCreated: all.length,
+			shipmentsInTransit: all.filter( s => s.state === ShipmentState.IN_TRANSIT ).length,
+			shipmentsDelivered: all.filter( s => s.state === ShipmentState.DELIVERED ).length,
+			renderedVehicleInstances: rendered,
+			renderedByVariant: byVariant,
+			builtThisTick,
+			playerActionStatus,
+		};
+		document.getElementById( 'status' ).textContent = JSON.stringify( summary );
+		window.__engineView3DVehiclesReady = summary;
+		// Exposed for automated verification of the actual instance
+		// buffers against real engine state, not just a summary count.
+		window.__engineView3DVehiclesDebug = { region, mineCity, millCity, vehicleMeshes, cargoRegistry, orchestrator, CITY_SIZE, GAP, MILL_OFFSET_X };
+
+	}
+
+	async function run () {
+
+		try {
+
+			status( 'building simulation (mine city -> mill city)...' );
+			// millLot (the steel_mill test lot) is force-placed inside
+			// buildSimulation() itself now, before fillCity runs - see the
+			// comment there for why budget-gating made that ordering
+			// necessary, not just a nice-to-have.
+			( { region, mineCity, millCity, resolver, orchestrator, millLot } = buildSimulation() );
+
+			const zoneCycle = [ ZoneType.RESIDENTIAL, ZoneType.COMMERCIAL, ZoneType.INDUSTRIAL ];
+			fillCity( mineCity, region, resolver, zoneCycle );
+			fillCity( millCity, region, resolver, zoneCycle );
+
+			const tilesData = buildCombinedTilesData( mineCity, millCity );
+
+			status( 'constructing real View/Hub (no Worker, no CityGame.js)...' );
+			AppState.hub = new Hub();
+			AppState.view3d = new View();
+			// The real click/tool-select pipeline (View.js's rayTest() ->
+			// AppState.main.mapClick(), Hub_Build's toolbar -> .selectTool())
+			// normally forwards to CityGame.js through a Worker message.
+			// Routed here into src/engine's ZoningTool instead - the whole
+			// point of this preview being interactive rather than a replay.
+			AppState.main = {
+				start () {},
+				sendTool () {},
+				setSpeed () {},
+				selectTool: handlePlayerSelectTool,
+				mapClick: handlePlayerMapClick,
+				// View.js's own testDestruct() calls this after it has
+				// already removed the real mesh/geometry for a bulldozed
+				// tile - a no-op here since handlePlayerBulldoze() already
+				// updated src/engine's state directly before triggering
+				// that visual removal.
+				destroy () {},
+			};
+
+			status( 'initRenderer()...' );
+			await AppState.view3d.initRenderer();
+
+			status( 'paintMap() on the combined two-city grid...' );
+			AppState.tilesData = tilesData;
+			AppState.view3d.paintMap( [ COMBINED_W, COMBINED_H ], false );
+			AppState.view3d.clearIntro();
+			AppState.hub.start();
+			// The real BUILD/SERVICE tool palette (src/city3d/hub/Hub_Build.js,
+			// MIT), same DOM UI the shipping game uses - not a synthetic one.
+			AppState.hub.initGameHub();
+
+			status( 'placing real buildings in both cities...' );
+			const built = syncNewBuildings();
+
+			status( 'adding real per-variant InstancedMesh vehicle layers to view3d.scene...' );
+			cargoRegistry = createDefaultCargoVisualRegistry();
+			vehicleMeshes = buildVehicleMeshes();
+
+			AppState.view3d.center.x = COMBINED_W / 2;
+			AppState.view3d.center.z = COMBINED_H / 2;
+			AppState.view3d.cam.distance = 140;
+			AppState.view3d.moveCamera();
+
+			status( `running simulation ticks (${built} facilities built)...` );
+			setInterval( tickSimulation, 200 );
+			tickSimulation();
+
+		} catch ( err ) {
+
+			status( 'ERROR: ' + err.message );
+			window.__engineView3DVehiclesReady = { ok: false, error: err.message, stack: err.stack };
+			console.error( err );
+
+		}
+
+	}
+
+	run();
+
+</script>
+
+<div id="container"></div>
+<div id="hub"></div>
+<div id="status">starting...</div>
+<div id="instructions">Ironhaven (left city) grows on its own - AUTOMATED. Steeltown (right city) is MANAGED: pick Residential/Commercial/Industrial from the real BUILD panel below, then click a tile in Steeltown to zone it through src/engine's ZoningTool - or pick Bulldozer to demolish an existing building through BulldozeTool. Zoning is real-money gated: each city starts with a founding grant and earns more from production tax + trade tariffs each tick (see the treasury/allocation numbers in the status line above) - a lot you zone may sit waiting on funding, not just resources, until enough arrives. Other tools (road, power, ...) are accepted by the real UI but aren't modeled yet, so they no-op.</div>
+
+</body></html>
